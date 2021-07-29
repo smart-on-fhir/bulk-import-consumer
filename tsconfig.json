@@ -1,0 +1,13 @@
+{
+    "include": ["./src/**/*.ts"],
+    "exclude": ["types.d.ts", "./**/*.js", "./jobs"],
+    "compilerOptions": {
+        "rootDir": "./src",
+        "types": ["./types"],
+        "outDir": "build",
+        "target": "es2021",
+        "module": "CommonJS",
+        "noImplicitAny": true,
+        "esModuleInterop": true
+    }
+}
