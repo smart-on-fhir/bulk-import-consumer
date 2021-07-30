@@ -17,13 +17,12 @@ async function default_1(req, res) {
     const store = node_jose_1.JWK.createKeyStore();
     const settings = config[alg];
     const key = await store.generate(settings.kty, settings.size, { alg });
-    const json = {
+    res.json({
         jwks: store.toJSON(true),
         publicAsJWK: key.toJSON(false),
         publicAsPEM: key.toPEM(false),
         privateAsJWK: key.toJSON(true),
         privateAsPEM: key.toPEM(true)
-    };
-    res.json(json);
+    });
 }
 exports.default = default_1;

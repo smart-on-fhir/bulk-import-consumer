@@ -42,6 +42,8 @@ interface ImportJobState {
     importProgress?: number
     status?: string
 
+    exportType: "dynamic" | "static"
+
     outcome: OperationOutcome[]
 }
 
@@ -152,7 +154,7 @@ export function getImportPingParameters(body: Parameters)
 
     return {
         exportUrl,
-        exportType,
+        exportType: exportType as "static" | "dynamic",
         exportParams
     }
 }
@@ -160,6 +162,8 @@ export function getImportPingParameters(body: Parameters)
 export class ImportJob
 {
     private state: JsonModel<ImportJobState>;
+
+    private client: BulkDataClient;
 
     // Begin Route Handlers ----------------------------------------------------
 
@@ -171,6 +175,8 @@ export class ImportJob
         const { exportType, exportUrl, exportParams } = getImportPingParameters(req.body)
         
         const job = await ImportJob.create();
+        job.state.set("exportType", exportType)
+        await job.state.save()
         
         // If the exportType is static, the Data Consumer will issue a GET
         // request to the exportUrl to retrieve a Bulk Data Manifest file with
@@ -178,18 +184,19 @@ export class ImportJob
         // the Data Provider SHALL respond to the GET request with the Complete
         // Status response described in the Bulk Data Export IG.
         if (exportType === "static") {
-            job.startStaticImport(exportUrl)
+            await job.startStaticImport(exportUrl)
         }
         
         // If the exportType is dynamic the Data Consumer will issue a POST
         // request to the exportUrl to obtain a dataset from the Data Provider,
         // following the Bulk Data Export flow described in the Bulk Data Export IG.
-        await job.startDynamicImport(exportUrl, exportParams);
-        if (job.state.get("exportStatusLocation")) {
-            res.set("content-location", `${getRequestBaseURL(req)}/job/${job.state.id}`)
-            res.status(202)
-            return res.end()
+        else {
+            await job.startDynamicImport(exportUrl, exportParams);
         }
+
+        res.set("content-location", `${getRequestBaseURL(req)}/job/${job.state.id}`)
+        res.status(202)
+        return res.end()
     }
     
     static async importOutcome(req: Request, res: Response) {
@@ -204,10 +211,16 @@ export class ImportJob
     
     static async status(req: Request, res: Response) {
         const job = await ImportJob.byId(req.params.id);
-        const exportProgress = job.state.get("exportProgress")
+        const exportType     = job.state.get("exportType")
         const importProgress = job.state.get("importProgress")
         const status         = job.state.get("status")
-        const progress = (exportProgress + importProgress) / 2
+        
+        let progress = importProgress;
+        if (exportType == "dynamic") {
+            const exportProgress = job.state.get("exportProgress")
+            progress = (exportProgress + importProgress) / 2
+        }
+
         res.set({
             "Cache-Control": "no-store",
             "Pragma": "no-cache"
@@ -366,19 +379,27 @@ export class ImportJob
     }
     
     // private methods ---------------------------------------------------------
+
+    private getBulkDataClient(): BulkDataClient
+    {
+        if (!this.client) {
+            this.client = new BulkDataClient({
+                clientId  : config.exportClient.clientId,
+                privateKey: config.exportClient.privateKey,
+                tokenUrl  : config.exportClient.tokenURL,
+                accessTokenLifetime: 3600,
+                verbose: false
+            });
+        }
+        return this.client
+    }
     
     private async startDynamicImport(kickOffUrl: string, params: BulkData.KickOfParams = {})
     {
         this.state.set("exportUrl", kickOffUrl)
         this.state.set("exportParams", params)
         await this.state.save()
-        const bdClient = new BulkDataClient({
-            clientId  : config.exportClient.clientId,
-            privateKey: config.exportClient.privateKey,
-            tokenUrl  : config.exportClient.tokenURL,
-            accessTokenLifetime: 3600,
-            verbose: false
-        })
+        const bdClient = this.getBulkDataClient()
         const kickOffResponse = await bdClient.kickOff(kickOffUrl, params);
         const contentLocation = kickOffResponse.headers["content-location"];
         this.state.set("exportStatusLocation", contentLocation);
@@ -389,6 +410,12 @@ export class ImportJob
 
     private async startStaticImport(manifestUrl: string) {
         console.log(`Starting static import from ${manifestUrl}`)
+        const bdClient = this.getBulkDataClient()
+        const { body } = await bdClient.fetchExportManifest(manifestUrl)
+        this.state.set("exportProgress", 100);
+        this.state.set("manifest", body);
+        await this.state.save()
+        setImmediate(() => this.waitForImport(bdClient))
     }
 
     private async waitForExport(kickOffResponse: BulkData.KickOffResponse, client: BulkDataClient): Promise<ImportJob>
@@ -408,6 +435,7 @@ export class ImportJob
         this.state.set("importProgress", 0)
         await this.state.save()
         const manifest = this.state.get("manifest")
+        const outcomes = this.state.get("outcome") as OperationOutcome[]
         const len = manifest.output?.length;
         let done = 0
 
@@ -421,8 +449,6 @@ export class ImportJob
             now.getUTCMinutes(),
             now.getUTCSeconds()
         ].join(":") + "Z";
-
-
 
         for (const file of manifest.output) {
             this.state.set("status", `Importing file ${basename(file.url)}`)
@@ -447,9 +473,11 @@ export class ImportJob
                     });
                     await upload.promise()
                 }
+                outcomes.push(new OperationOutcome(`File from ${file.url} imported successfully`, 200, "information"))
             } catch (ex) {
                 console.log(`Error handling file ${file.url}`)
                 console.error(ex)
+                outcomes.push(ex)
             }
             this.state.set("importProgress", Math.round((++done/len) * 100))
             await this.state.save()

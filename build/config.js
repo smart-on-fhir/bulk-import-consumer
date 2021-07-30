@@ -122,9 +122,7 @@ const config = {
     destination: {
         type: env.DESTINATION_TYPE,
         options: {
-            bucketName: env.AWS_S3_BUCKET_NAME,
-            accessKeyId: env.AWS_ACCESS_KEY_ID,
-            accessKeySecret: env.AWS_SECRET_ACCESS_KEY
+            bucketName: env.AWS_S3_BUCKET_NAME
         }
     },
     aws: {

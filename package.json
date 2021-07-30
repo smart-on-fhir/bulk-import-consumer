@@ -13,7 +13,7 @@
     "build": "tsc",
     "build:watch": "tsc --watch",
     "prestart": "npm run build",
-    "dev": "concurrently npm:build:watch npm:start:watch",
+    "dev": "npm run clean && npm run build && concurrently npm:build:watch npm:start:watch",
     "clean": "rm -rf ./build"
   },
   "keywords": ["Bulk Data", "FHIR", "import", "SMART", "SMART Backend Services", "OAuth"],

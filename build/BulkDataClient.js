@@ -189,12 +189,7 @@ class BulkDataClient {
         if (!this.accessToken) {
             this.accessToken = await this.authorize();
         }
-        const { body, statusCode, headers } = await this.request(contentLocation, {
-            responseType: "json",
-            headers: {
-                authorization: `Bearer ${this.accessToken}`
-            }
-        });
+        const { body, statusCode, headers } = await this.fetchExportManifest(contentLocation);
         if (statusCode !== 200) {
             onProgress && await onProgress(parseFloat(headers["x-progress"] + "" || "0"));
             await lib_1.wait(1000);
@@ -203,6 +198,25 @@ class BulkDataClient {
         await lib_1.wait(100);
         onProgress && await onProgress(100);
         return body;
+    }
+    /**
+     * This is used for both static and dynamic imports.
+     * - For static, `location` is the URL of the already available export
+     *   manifest json.
+     * - For dynamic, `location` is the URL of the job status endpoint. If
+     *   export is still in progress this will resolve with 202 responses and
+     *   should be called again until status 200 is received
+     */
+    async fetchExportManifest(location) {
+        if (!this.accessToken) {
+            this.accessToken = await this.authorize();
+        }
+        return this.request(location, {
+            responseType: "json",
+            headers: {
+                authorization: `Bearer ${this.accessToken}`
+            }
+        });
     }
     downloadFile(descriptor) {
         const out = {

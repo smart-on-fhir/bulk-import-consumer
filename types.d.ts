@@ -108,8 +108,6 @@ export namespace ImportServer {
              */
             options: {
                 bucketName: string
-                accessKeyId: string
-                accessKeySecret: string
             }
         },
 
