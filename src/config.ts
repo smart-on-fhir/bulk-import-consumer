@@ -130,7 +130,7 @@ const schema = {
  
 const env: Env = load(schema);
 
-// console.log(env)
+console.log(env)
 
 const config: ImportServer.Config = {
     port: env.PORT,
@@ -162,5 +162,7 @@ const config: ImportServer.Config = {
         secretAccessKey: env.AWS_SECRET_ACCESS_KEY
     }
 }
+
+console.log(config)
 
 export default config;
