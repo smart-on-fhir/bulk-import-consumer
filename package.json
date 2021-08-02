@@ -12,7 +12,6 @@
     "start:watch": "nodemon -i ./jobs -x 'node ./build/index.js'",
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "prestart": "npm run build",
     "dev": "npm run clean && npm run build && concurrently npm:build:watch npm:start:watch",
     "clean": "rm -rf ./build"
   },
