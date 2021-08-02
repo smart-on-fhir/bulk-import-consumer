@@ -3,7 +3,7 @@ Bulk Data Import Server (Data Consumer)
 
 This server is an experimental prototype implementation of a Data Consumer
 application, as defined in the [Bulk Data Ping and Pull Import Proposal](https://github.com/smart-on-fhir/bulk-import/blob/master/import-pnp.md). It is available
-online [here](#), but you will have more options if you run it locally.
+online [here](https://bulk-import-consumer.herokuapp.com/), but you will have more options if you run it locally.
 
 The server behaves like a Bulk Data Client and consumes bulk-data NDJSON files.
 The imported files are immediately discarded if using the online version. When
