@@ -385,8 +385,8 @@ export class ImportJob
         if (!this.client) {
             this.client = new BulkDataClient({
                 clientId  : config.exportClient.clientId,
-                privateKey: config.exportClient.privateKey,
                 tokenUrl  : config.exportClient.tokenURL,
+                privateKey: config.privateKey,
                 accessTokenLifetime: 3600,
                 verbose: false
             });

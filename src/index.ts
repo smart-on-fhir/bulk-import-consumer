@@ -14,6 +14,8 @@ const app = express();
 
 app.use(cors({ origin: true, credentials: true }));
 
+app.get("/jwks", (req, res) => res.json({ keys: [ config.publicKey ] }));
+
 app.post("/\\$import", express.json({ type: config.jsonContentTypes }), routeHandler(ImportJob.kickOff))
 
 app.get("/job/:id/import-outcome.ndjson", routeHandler(ImportJob.importOutcome))

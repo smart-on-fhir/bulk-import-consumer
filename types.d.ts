@@ -65,6 +65,16 @@ export namespace ImportServer {
         jobsPath: string
 
         /**
+         * The public key of this server
+         */
+        publicKey: JWK
+        
+        /**
+         * The private key of this server
+         */
+        privateKey: JWK
+
+        /**
          * Data provider's client configuration
          */
         exportClient: {
@@ -84,10 +94,6 @@ export namespace ImportServer {
              */
             clientId: string
 
-            /**
-             * The private key of this server
-             */
-            privateKey: JWK
         }
 
         destination: {
