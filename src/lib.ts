@@ -154,7 +154,7 @@ async function parseJSON<T=JsonValue>(json: any): Promise<T>
         setImmediate(() => {
             let out;
             try {
-                out = JSON.parse(json);
+                out = JSON.parse(String(json));
             }
             catch (error) {
                 console.error(error)
