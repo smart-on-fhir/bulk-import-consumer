@@ -64,7 +64,11 @@ const schema = {
         optional: false,
         type: String
     },
-    EXPORT_CLIENT_PRIVATE_KEY: {
+    PRIVATE_KEY: {
+        optional: false,
+        type: String
+    },
+    PUBLIC_KEY: {
         optional: false,
         type: String
     },
@@ -113,11 +117,12 @@ const config = {
     jwtSecret: env.JWT_SECRET,
     accessTokensExpireIn: env.ACCESS_TOKEN_EXPIRE_IN,
     ndjsonMaxLineLength: env.NDJSON_MAX_LINE_LENGTH,
+    publicKey: JSON.parse(env.PUBLIC_KEY),
+    privateKey: JSON.parse(env.PRIVATE_KEY),
     exportClient: {
         serverURL: env.EXPORT_CLIENT_SERVER_URL,
         tokenURL: env.EXPORT_CLIENT_TOKEN_URL,
         clientId: env.EXPORT_CLIENT_CLIENT_ID,
-        privateKey: JSON.parse(env.EXPORT_CLIENT_PRIVATE_KEY),
     },
     destination: {
         type: env.DESTINATION_TYPE,

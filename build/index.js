@@ -16,6 +16,7 @@ const config_1 = __importDefault(require("./config"));
 const ImportJob_1 = require("./ImportJob");
 const app = express_1.default();
 app.use(cors_1.default({ origin: true, credentials: true }));
+app.get("/jwks", (req, res) => res.json({ keys: [config_1.default.publicKey] }));
 app.post("/\\$import", express_1.default.json({ type: config_1.default.jsonContentTypes }), lib_1.routeHandler(ImportJob_1.ImportJob.kickOff));
 app.get("/job/:id/import-outcome.ndjson", lib_1.routeHandler(ImportJob_1.ImportJob.importOutcome));
 app.get("/job/:id", lib_1.routeHandler(ImportJob_1.ImportJob.status));

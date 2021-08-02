@@ -159,7 +159,7 @@ async function parseJSON(json) {
         setImmediate(() => {
             let out;
             try {
-                out = JSON.parse(json);
+                out = JSON.parse(String(json));
             }
             catch (error) {
                 console.error(error);
