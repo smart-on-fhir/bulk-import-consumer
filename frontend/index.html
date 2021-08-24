@@ -8,6 +8,7 @@
         <link rel="apple-touch-icon" href="/smart-logo.png" />
         <title>Bulk Data Import Server</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>
@@ -19,132 +20,221 @@
             </h1>
             <hr/>
         </header>
-        <div id="root" class="container-lg">
-
-            <section id="registration-section">
-                <h2 class="text-primary">Client Registration</h2>
-                <p>
-                    Use this form to register new client. Upon successful registration you will be given a <code>client_id</code>
-                    and information on how to connect.
-                </p>
-                <form autocomplete="off">
-                    <fieldset class="mb-3 mt-4">
-                        <legend>Public Key</legend>
-                        <div class="row mt-3" style="min-height: 8rem;">
-                            <div class="col-6">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="radio" name="keyType" id="keyTypeJWKS">
-                                    <label class="form-check-label" for="keyTypeJWKS">Provide the key now</label>
-                                    <div class="form-text">Provide your public key as JWK</div>
-                                </div>
-                                <div class="form-check me-5">
-                                    <input class="form-check-input" type="radio" name="keyType" id="keyTypeJWKSURL" checked>
-                                    <label class="form-check-label" for="keyTypeJWKSURL">Fetch the key from JWKS URL</label>
-                                    <div class="form-text">Provide an URL to your JWKS containing your public key(s)</div>
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <div id="form-section-jwks">
-                                    <label for="jwk">Public Key <span class="text-muted">(as JWK)</span></label>
-                                    <textarea id="jwk" class="form-control" rows="3" style="font-family: monospace; font-size: 14px;" spellcheck="false"></textarea>
-                                    <div class="invalid-feedback">Invalid JWK</div>
-                                </div>
-                                <div id="form-section-jwks-url">
-                                    <label for="jwks_uri">JWKS URL</label>
-                                    <input type="url" id="jwks_uri" class="form-control" placeholder="https://....json"/>
-                                </div>
-                            </div>
-                        </div>
-                    </fieldset>
-                    <fieldset class="mb-3 mt-4">
-                        <legend>
-                            <label>
-                                <input type="checkbox" class="form-check-input" id="show-generator"> Show Key Generator
-                            </label>
-                        </legend>
-                        <div class="alert alert-warning" id="generator" style="display: none;">
+        <div class="modal fade" id="key-gen" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="exampleModalLabel"><i class="fas fa-key"></i> JWK Key Generator</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="alert alert-warning">
                             <b>NOTE:</b> You should generate keys yourself and never trust a website to do that! However, since this
                             is a tool for development and testing, we also provide a key generator. We do not store these
                             keys anywhere, and yet you should never use them in production!
-                            <div class="row mt-3 mb-3">
-                                <label class="col-form-label col-auto">Algorithm:</label>
-                                <div class="col-auto">
-                                    <select class="form-control" id="alg">
-                                        <option value="RS256">RS256</option>
-                                        <option value="RS384">RS384 (recommended)</option>
-                                        <option value="RS512">RS512</option>
-                                        <option value="ES256">ES256</option>
-                                        <option value="ES384">ES384 (recommended)</option>
-                                        <option value="ES512">ES512</option>
-                                    </select>
-                                </div>
-                                <label class="col-auto text-end col-form-label ps-5">View as:</label>
-                                <div class="col-auto text-end">
+                        </div>
+                        <div class="row mt-2 mb-3">
+                            <div class="col-6">
+                                <label>Algorithm:</label>
+                                <select class="form-control mt-2" id="alg">
+                                    <option value="RS256">RS256</option>
+                                    <option value="RS384">RS384 (recommended)</option>
+                                    <option value="RS512">RS512</option>
+                                    <option value="ES256">ES256</option>
+                                    <option value="ES384">ES384 (recommended)</option>
+                                    <option value="ES512">ES512</option>
+                                </select>
+                            </div>
+                            <div class="col-3">
+                                <label>View as:</label>
+                                <div class="mt-2">
                                     <input type="radio" class="btn-check" data-value="jwk" name="generated-key-type" id="generated-key-type-jwk" autocomplete="off" checked>
                                     <label class="btn btn-outline-secondary" for="generated-key-type-jwk">JWK</label>
                                     
                                     <input type="radio" class="btn-check" data-value="pem" name="generated-key-type" id="generated-key-type-pem" autocomplete="off">
                                     <label class="btn btn-outline-secondary" for="generated-key-type-pem">PEM</label>
                                 </div>
-                                <div class="col text-end">
-                                    <button type="button" id="generate" class="btn btn-success">Generate Keys</button>
-                                </div>
                             </div>
-                            <div class="row">
-                                <div class="col">
-                                    <label for="generated-public-key">Public Key</label>
-                                    <textarea id="generated-public-key" class="form-control" style="font-family: monospace; font-size: 14px;" rows="6" spellcheck="false" readonly></textarea>
-                                    <div class="form-text"><button class="btn btn-sm btn-outline-success" type="button" id="paste-key">Paste</button> this key (as JWK) in the <code>Public Key</code> text box above</div>
-                                </div>
-                                <div class="col">
-                                    <label for="generated-private-key">Private Key</label>
-                                    <textarea id="generated-private-key" class="form-control" style="font-family: monospace; font-size: 14px;" rows="6" spellcheck="false" readonly></textarea>
-                                    <div class="form-text">Use this key in your client app to sign tokens</div>
-                                </div>
+                            <div class="col-3 text-end">
+                                <br/>
+                                <button type="button" id="generate" class="btn btn-primary mt-2">Generate&nbsp;Keys</button>
                             </div>
                         </div>
-                    </fieldset>
-                    <hr/>
-                    <p class="text-center">
-                        <button type="submit" class="btn btn-primary btn-lg">Register</button>
-                    </p>
-                </form>
-            </section>
-
-            <section id="client-section">
-                <h2 class="text-success mt-5 mb-5">Client Registration Completed!</h2>
-                <div class="row mt-5 mb-5">
-                    <div class="col">
-                        <label>Your <code>client_id</code></label>
-                        <div class="form-text">Use this in your token requests</div>
-                        <input type="text" readonly id="client_id" class="form-control"/>
+                        <div class="row">
+                            <div class="col">
+                                <span class="btn btn-sm float-end text-muted" data-copy="#generated-public-key">Copy <i class="far fa-clipboard"></i></span>
+                                <label for="generated-public-key">Public Key</label>
+                                <textarea id="generated-public-key" class="form-control" style="font-family: monospace; font-size: 14px;" rows="8" spellcheck="false" readonly></textarea>
+                                <div class="form-text">Use this key (as JWK) for client registration</div>
+                            </div>
+                            <div class="col">
+                                <span class="btn btn-sm float-end text-muted" data-copy="#generated-private-key">Copy <i class="far fa-clipboard"></i></span>
+                                <label for="generated-private-key">Private Key</label>
+                                <textarea id="generated-private-key" class="form-control" style="font-family: monospace; font-size: 14px;" rows="8" spellcheck="false" readonly></textarea>
+                                <div class="form-text">Use this key in your client app to sign tokens</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="col">
-                        <label>Token URL</label>
-                        <div class="form-text">Authorize against this endpoint</div>
-                        <input type="text" readonly id="token_endpoint" class="form-control"/>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="button" class="btn btn-success" disabled id="paste-key" data-bs-dismiss="modal">Use These Keys</button>
                     </div>
                 </div>
-                <div class="mt-5 mb-5">
-                    <hr/>
+            </div>
+        </div>
+        <div id="root" class="container-lg">
+            <ul class="nav nav-tabs">
+                <li class="nav-item">
+                    <button type="button" role="tab" aria-selected="true" data-bs-toggle="tab" class="nav-link active" id="tab-register" data-bs-target="#registration-section">Client Registration</a>
+                </li>
+                <li class="nav-item">
+                    <button type="button" role="tab" aria-selected="false" data-bs-toggle="tab" class="nav-link" id="tab-introspect" data-bs-target="#client-section">Introspection</a>
+                </li>
+                <li class="nav-item">
+                    <button type="button" role="tab" aria-selected="false" data-bs-toggle="tab" class="nav-link" id="tab-info" data-bs-target="#info-section">Server Info</a>
+                </li>
+            </ul>
+            <div class="tab-content">
+                
+                <section id="registration-section" class="tab-pane fade show active" role="tabpanel" aria-labelledby="tab-register">
+                    <!-- <h2 class="text-primary">Client Registration</h2> -->
                     <br/>
-                    <p class="text-center">
-                        <button id="clear-client" type="button" class="btn btn-secondary">Register another Client</button>
+                    <p class="form-text">
+                        Use this form to register new client. Upon successful
+                        registration you will be given a <code>client_id</code>
+                        and information on how to connect.
                     </p>
-                </div>
-            </section>
-            
-            <!-- <br/>
-            To authorize against this server create a token like this:
-            <pre>
-            {
-                iss: "your client_id",
-                sub: "your client_id",
-                aud: "https://dasdasda",
-                exp: {expiration timestamp},
-                jti: "random ID string"
-            }
-            </pre> -->
+                    <form autocomplete="off">
+                        <fieldset class="mb-3 mt-4">
+                            <legend>Public Key</legend>
+                            <div class="row mt-3" style="min-height: 8rem;">
+                                <div class="col-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="keyType" id="keyTypeJWKS">
+                                        <label class="form-check-label" for="keyTypeJWKS">Provide the key now</label>
+                                        <div class="form-text">Provide your public key as JWK</div>
+                                    </div>
+                                    <div class="form-check me-5">
+                                        <input class="form-check-input" type="radio" name="keyType" id="keyTypeJWKSURL" checked>
+                                        <label class="form-check-label" for="keyTypeJWKSURL">Fetch the key from JWKS URL</label>
+                                        <div class="form-text">Provide an URL to your JWKS containing your public key(s)</div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div id="form-section-jwks" style="display: none;">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary float-end" data-bs-toggle="modal" data-bs-target="#key-gen" data-bs-whatever="@getbootstrap">Key Generator</button>
+                                        <label for="jwk">Public Key <span class="text-muted">(as JWK)</span></label>
+                                        <textarea id="jwk" class="form-control mt-3" rows="3" style="font-family: monospace; font-size: 14px;" spellcheck="false"></textarea>
+                                        <div class="invalid-feedback">Invalid JWK</div>
+                                    </div>
+                                    <div id="form-section-jwks-url">
+                                        <label for="jwks_uri">JWKS URL</label>
+                                        <input type="url" name="jwks_uri" id="jwks_uri" class="form-control" placeholder="https://....json"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </fieldset>
+                        
+                        <fieldset class="mb-5 mt-4">
+                            <legend>Connection Information</legend>
+                            <div class="form-text">
+                                Provide some information about the Data Provider server that
+                                this client will be allowed to import data from
+                            </div>
+                            <div class="row mt-3" style="min-height: 8rem;">
+                                <div class="col-6">
+                                    <label for="consumer_client_id">Data Consumer Client ID</label>
+                                    <input type="text" id="consumer_client_id" name="consumer_client_id" required class="form-control"/>
+                                    <div class="form-text">
+                                        The Data Consumer must be registered as client of
+                                        the Data Provider and you should provide its
+                                        <code>client_id</code> here. The import
+                                        server can be registered as client with multiple export
+                                        servers and you need to tell it which <code>client_id</code>
+                                        to use.
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <label for="provider_base_url">Data Provider BaseURL</label>
+                                    <input type="text" id="provider_base_url" name="provider_base_url" class="form-control"/>
+                                    <div class="form-text">
+                                        The BaseURL of the Data Provider FHIR server. This will
+                                        be used to look up the <code>.well-known/smart-configuration</code>
+                                        and auto-detect the token endpoint that we need to use for
+                                        authorization.
+                                    </div>
+                                </div>
+                            </div>
+                        </fieldset>
+                        <hr/>
+                        <p class="text-center">
+                            <button style="min-width: 10em;margin-right: 5px;" type="reset"  class="btn btn-lg btn-outline-secondary" id="clear-client">Reset Form</button>
+                            <button style="min-width: 10em;margin-left: 5px" type="submit" class="btn btn-lg btn-primary">Register</button>
+                        </p>
+                    </form>
+                </section>
+
+                <section id="client-section" class="tab-pane fade show" role="tabpanel" aria-labelledby="tab-introspect">
+                    <div class="row mt-5 mb-5">
+                        <div class="col">
+                            <label for="client_id">Client ID</label>
+                            <div class="form-text">Use this in your token requests. You can paste a client id to inspect the corresponding client details.</div>
+                            <textarea id="client_id" class="form-control" rows="3"></textarea>
+                        </div>
+                    </div>
+                    <div class="client-info">
+                        <h3>Client Information</h3>
+                        <table class="table table-sm table-bordered table-hover mt-5">
+                            <thead>
+                                <tr>
+                                    <th>Property</th>
+                                    <th>Value</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <th style="white-space: nowrap;">Data Provider</th>
+                                    <td style="width:40%; word-wrap:break-word; word-break:break-all;"><code id="client-aud">https://bulk-data.smarthealthit.org/eyJlcnIiOiIiLCJwYWdlIjoxMDAwMCwiZHVyIjowLCJ0bHQiOjYwLCJtIjoxLCJzdHUiOjQsImRlbCI6MH0/fhir</code></td>
+                                    <td class="text-muted">This client is allowed to trigger bulk data imports originating from the data provider at this location</td>
+                                </tr>
+                                <tr>
+                                    <th style="white-space: nowrap;">Data Consumer Client ID</th>
+                                    <td style="width:40%; word-wrap:break-word; word-break:break-all;">
+                                        <div style="max-height: 300px; overflow: auto;">
+                                            <code id="client-consumer_client_id"></code>
+                                        </div>
+                                    </td>
+                                    <td class="text-muted">When exporting data from the data provider initiated by this client, the data consumer will present itself using this client id</td>
+                                </tr>
+                                <tr>
+                                    <th style="white-space: nowrap;">Client created at</th>
+                                    <td><code id="client-iat"></code></td>
+                                    <td class="text-muted">When was this client created</td>
+                                </tr>
+                                <tr>
+                                    <th>JWKS</th>
+                                    <td style="width:40%; word-wrap:break-word; word-break:break-all;"><code id="client-jwks"></code></td>
+                                    <td class="text-muted">A JWKS object containing the public key(s) provided during client registration</td>
+                                </tr>
+                                <tr>
+                                    <th>JWKS URL</th>
+                                    <td style="width:40%; word-wrap:break-word; word-break:break-all;"><code id="client-jwks_uri"></code></td>
+                                    <td class="text-muted">
+                                        Publicly available URL to JWKS object containing the public key(s). Data providers
+                                        should fetch the public keys from there every time they authorize.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="info-section" class="tab-pane fade show" role="tabpanel" aria-labelledby="tab-info">
+                    <br/>
+                    <div class="info-table-wrap">Loading...</div>
+                </section>
+            </div>
             <br />
         </div>
         <script src="/js/jquery.min.js"></script>

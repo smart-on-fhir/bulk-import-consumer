@@ -74,11 +74,6 @@ const schema = {
         type: String
     },
     
-    EXPORT_CLIENT_CLIENT_ID: {
-        optional: false,
-        type: String
-    },
-            
     PRIVATE_KEY: {
         optional: false,
         type: String
@@ -138,6 +133,7 @@ const config: ImportServer.Config = {
     jobsPath: join(__dirname, "..", env.JOBS_PATH),
     jobsIdLength: env.JOBS_ID_LENGTH,
     jobsMaxAge: env.JOBS_MAX_AGE,
+    jobsMaxAbsoluteAge: env.JOBS_MAX_AGE * 2,
     jsonContentTypes: env.JSON_CONTENT_TYPES.trim().split(/\s*,\s*/),
     jwtSecret: env.JWT_SECRET,
     accessTokensExpireIn: env.ACCESS_TOKEN_EXPIRE_IN,
@@ -146,8 +142,7 @@ const config: ImportServer.Config = {
     privateKey: JSON.parse(env.PRIVATE_KEY),
     exportClient: {
         serverURL: env.EXPORT_CLIENT_SERVER_URL,
-        tokenURL: env.EXPORT_CLIENT_TOKEN_URL,
-        clientId: env.EXPORT_CLIENT_CLIENT_ID,
+        tokenURL: env.EXPORT_CLIENT_TOKEN_URL
     },
     destination: {
         type: env.DESTINATION_TYPE as "tmp-fs" | "dev-null" | "s3",

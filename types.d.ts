@@ -15,10 +15,35 @@ export namespace ImportServer {
     }
 
     export interface Client {
+        /**
+         * A JWKS object containing the public key(s) used to verify the
+         * signature of the incoming bearer tokens. This is required if
+         * `jwks_uri` is not set.
+         */
         jwks?: JWKS
+
+        /**
+         * URL to public location at which the public keys of the client
+         * system are available as JWKS json object. This is required if
+         * `jwks` is not set. 
+         */
         jwks_uri?: string
+
+        /**
+         * The unique ID of the client
+         */
         client_id: string
-        iss: string
+
+        /**
+         * The client_id of the consumer that should be used while importing
+         * data from the provider.
+         */
+        consumer_client_id: string
+
+        /**
+         * The base URL of the data provider's FHIR server
+         */
+        aud: string
     }
 
     interface Config {
@@ -48,6 +73,15 @@ export namespace ImportServer {
          * filesystem)
          */
         jobsMaxAge: number
+
+        /**
+         * The jobsMaxAge is computed since the import was completed. However,
+         * if a job has been started but failed to complete for some reason,
+         * we consider it a zombie job which can be given more time but still
+         * needs to be killed after that. By default we use `jobsMaxAge * 2`
+         * for the absolute max age.
+         */
+        jobsMaxAbsoluteAge: number
 
         /**
          * Content types recognized as JSON
@@ -88,11 +122,6 @@ export namespace ImportServer {
              * The token URL of the data provider's auth server
              */
             tokenURL: string
-
-            /**
-             * The client_id of this server register at the data provider site
-             */
-            clientId: string
 
         }
 

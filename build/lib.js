@@ -22,12 +22,19 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getJobIds = exports.getRequestBaseURL = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.asArray = exports.htmlEncode = void 0;
+exports.getJobIds = exports.getRequestBaseURL = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.truncateUrl = exports.asArray = exports.htmlEncode = exports.AbortError = void 0;
 const fs_1 = require("fs");
 const promises_1 = require("fs/promises");
 const util = __importStar(require("util"));
 const CustomError_1 = require("./CustomError");
 const config_1 = __importDefault(require("./config"));
+const posix_1 = require("path/posix");
+class AbortError extends Error {
+    constructor(message = "Operation aborted") {
+        super(message);
+    }
+}
+exports.AbortError = AbortError;
 const RE_GT = />/g;
 const RE_LT = /</g;
 const RE_AMP = /&/g;
@@ -45,6 +52,14 @@ function asArray(x) {
     return Array.isArray(x) ? x : [x];
 }
 exports.asArray = asArray;
+function truncateUrl(url) {
+    const _url = new URL(url);
+    if (_url.pathname != "/") {
+        _url.pathname = ".../" + posix_1.basename(_url.pathname);
+    }
+    return _url.href;
+}
+exports.truncateUrl = truncateUrl;
 function assert(condition, message, ...rest) {
     if (!(condition)) {
         if (message && typeof message === "object") {
@@ -105,12 +120,20 @@ exports.routeHandler = routeHandler;
  */
 function wait(ms, signal) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, ms);
-        if (signal) {
-            signal.addEventListener("abort", () => {
+        const timer = setTimeout(() => {
+            if (signal) {
+                signal.removeEventListener("abort", abort);
+            }
+            resolve(true);
+        }, ms);
+        function abort() {
+            if (timer) {
                 clearTimeout(timer);
-                reject(new Error("Waiting aborted"));
-            }, { once: true });
+            }
+            reject(new AbortError("Waiting aborted"));
+        }
+        if (signal) {
+            signal.addEventListener("abort", abort);
         }
     });
 }
@@ -146,14 +169,14 @@ async function readJSON(path) {
 }
 exports.readJSON = readJSON;
 /**
-* Parses the given json string into a JSON object. Internally it uses the
-* JSON.parse() method but adds three things to it:
-* 1. Returns a promise
-* 2. Ensures async result
-* 3. Catches errors and rejects the promise
-* @todo Investigate if we can drop the try/catch block and rely on the built-in
-*       error catching.
-*/
+ * Parses the given json string into a JSON object. Internally it uses the
+ * JSON.parse() method but adds three things to it:
+ * 1. Returns a promise
+ * 2. Ensures async result
+ * 3. Catches errors and rejects the promise
+ * @todo Investigate if we can drop the try/catch block and rely on the built-in
+ *       error catching.
+ */
 async function parseJSON(json) {
     return new Promise((resolve, reject) => {
         setImmediate(() => {

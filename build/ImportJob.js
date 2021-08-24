@@ -23,6 +23,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImportJob = exports.getImportPingParameters = exports.validateKickOffBody = exports.validateKickOffHeaders = void 0;
+const util_1 = __importDefault(require("util"));
 const path_1 = require("path");
 const promises_1 = require("fs/promises");
 const fs_1 = require("fs");
@@ -34,6 +35,7 @@ const config_1 = __importDefault(require("./config"));
 const auth_1 = require("./auth");
 const DevNull_1 = require("./DevNull");
 const lib_1 = require("./lib");
+const debug = util_1.default.debuglog("app");
 function validateKickOffHeaders(req) {
     const { 
     /**
@@ -132,16 +134,24 @@ exports.getImportPingParameters = getImportPingParameters;
 class ImportJob {
     constructor(state) {
         this.state = state;
+        this.abortController = new AbortController();
     }
+    // private client: ImportServer.Client;
     // Begin Route Handlers ----------------------------------------------------
     static async kickOff(req, res, next) {
-        await auth_1.authorizeIncomingRequest(req);
+        const client = await auth_1.authorizeIncomingRequest(req);
         validateKickOffHeaders(req);
         validateKickOffBody(req);
         const { exportType, exportUrl, exportParams } = getImportPingParameters(req.body);
         const job = await ImportJob.create();
-        job.state.set("exportType", exportType);
-        await job.state.save();
+        await job.state.save({ client, exportType });
+        let finished = false;
+        res.once("finish", () => finished = true);
+        res.once("close", async () => {
+            if (!finished) {
+                job.cancel();
+            }
+        });
         // If the exportType is static, the Data Consumer will issue a GET
         // request to the exportUrl to retrieve a Bulk Data Manifest file with
         // the location of the Bulk Data files. In this abbreviated export flow,
@@ -156,7 +166,10 @@ class ImportJob {
         else {
             await job.startDynamicImport(exportUrl, exportParams);
         }
-        res.set("content-location", `${lib_1.getRequestBaseURL(req)}/job/${job.state.id}`);
+        // if not canceled due to aborting kick-off request
+        if (job.state) {
+            res.set("content-location", `${lib_1.getRequestBaseURL(req)}/job/${job.state.id}`);
+        }
         res.status(202);
         return res.end();
     }
@@ -197,7 +210,10 @@ class ImportJob {
             // next call we will proceed to the success response.
             if (progress === 100) {
                 job.state.set("status", "Importing completed");
-                await job.state.save();
+                await job.state.save({
+                    status: "Importing completed",
+                    completedAt: Date.now()
+                });
                 res.set("retry-after", "1");
             }
             return res.end();
@@ -273,13 +289,12 @@ class ImportJob {
     }
     static async cancel(req, res) {
         const job = await ImportJob.byId(req.params.id);
-        console.log(`Deleting job "${req.params.id}"`);
+        job.debug("Deleting job");
         await job.cancel();
         res.status(202).json(new OperationOutcome_1.OperationOutcome("Import job was removed", "processing", "information"));
     }
     // End Route Handlers ------------------------------------------------------
     static async byId(id) {
-        // console.log(`byId("${id}")`)
         const model = await JsonModel_1.JsonModel.byId(id);
         if (model) {
             return new ImportJob(model);
@@ -299,62 +314,133 @@ class ImportJob {
         return this.state;
     }
     async cancel() {
-        return promises_1.rm(path_1.join(config_1.default.jobsPath, this.state.id), {
+        // this.state.set("aborted", true)
+        // await this.state.save()
+        this.abortController.abort();
+        const client = await this.getBulkDataClient();
+        await client.cancel();
+        this.debug("Deleting state from %s", path_1.join(config_1.default.jobsPath, this.state.id));
+        await promises_1.rm(path_1.join(config_1.default.jobsPath, this.state.id), {
             recursive: true,
             maxRetries: 1,
             force: true
         });
+        this.state = null;
     }
     // private methods ---------------------------------------------------------
-    getBulkDataClient() {
-        if (!this.client) {
-            this.client = new BulkDataClient_1.BulkDataClient({
-                clientId: config_1.default.exportClient.clientId,
-                tokenUrl: config_1.default.exportClient.tokenURL,
-                privateKey: config_1.default.privateKey,
-                accessTokenLifetime: 3600,
-                verbose: false
-            });
+    debug(message, ...rest) {
+        debug("ImportJob#%s: " + message, this.state?.id, ...rest);
+    }
+    async getBulkDataClient() {
+        // In case we already have an instance
+        // ---------------------------------------------------------------------
+        if (this.bulkDataClient) {
+            return this.bulkDataClient;
         }
-        return this.client;
-    }
-    async startDynamicImport(kickOffUrl, params = {}) {
-        this.state.set("exportUrl", kickOffUrl);
-        this.state.set("exportParams", params);
-        await this.state.save();
-        const bdClient = this.getBulkDataClient();
-        const kickOffResponse = await bdClient.kickOff(kickOffUrl, params);
-        const contentLocation = kickOffResponse.headers["content-location"];
-        this.state.set("exportStatusLocation", contentLocation);
-        this.state.set("status", "Waiting for export files to be generated");
-        await this.state.save();
-        setImmediate(() => this.waitForExport(kickOffResponse, bdClient));
-    }
-    async startStaticImport(manifestUrl) {
-        console.log(`Starting static import from ${manifestUrl}`);
-        const bdClient = this.getBulkDataClient();
-        const { body } = await bdClient.fetchExportManifest(manifestUrl);
-        this.state.set("exportProgress", 100);
-        this.state.set("manifest", body);
-        await this.state.save();
-        setImmediate(() => this.waitForImport(bdClient));
-    }
-    async waitForExport(kickOffResponse, client) {
-        const manifest = await client.waitForExport(kickOffResponse, async (pct) => {
-            this.state.set("exportProgress", pct);
-            await this.state.save();
+        // In case this is called while we are already in the process of
+        // creating an instance
+        // ---------------------------------------------------------------------
+        if (this.bulkDataClientPromise) {
+            this.bulkDataClient = await this.bulkDataClientPromise;
+            this.bulkDataClientPromise = null;
+            return this.bulkDataClient;
+        }
+        // In case we are "reviving" this job (because it has been created in 
+        // previous request), we need to find the exact BulkDataClient instance
+        // that was previously used
+        // ---------------------------------------------------------------------
+        const id = this.state.get("bulkDataClientInstanceId");
+        if (id) {
+            this.debug("Getting BulkDataClient instance with id %s", id);
+            this.bulkDataClient = BulkDataClient_1.BulkDataClient.getInstance(id);
+            return this.bulkDataClient;
+        }
+        // Create brand new client instance. Be careful here! It takes a while
+        // to create an instance and if getBulkDataClient is called again while
+        // waiting we might produce two instances
+        // ---------------------------------------------------------------------
+        this.debug("Getting new BulkDataClient instance");
+        const client = this.state.get("client");
+        const instance = new BulkDataClient_1.BulkDataClient({
+            clientId: client.consumer_client_id,
+            providerBaseUrl: client.aud,
+            privateKey: config_1.default.privateKey
         });
-        this.state.set("manifest", manifest);
-        await this.state.save();
-        return this.waitForImport(client);
+        this.debug("Saving new bulkDataClientInstanceId %s", instance.id);
+        this.bulkDataClientPromise = this.state.save({
+            bulkDataClientInstanceId: instance.id
+        }).then(() => instance);
+        this.bulkDataClient = await this.bulkDataClientPromise;
+        this.bulkDataClientPromise = null;
+        return this.bulkDataClient;
     }
-    async waitForImport(client) {
-        this.state.set("importProgress", 0);
-        await this.state.save();
+    /**
+     * Note that this method will resolve when the Bulk Data export has been
+     * started. Internally, the job will watch the progress of the export but
+     * this method will not wait for it.
+     */
+    async startDynamicImport(kickOffUrl, params = {}) {
+        if (this.state) {
+            this.debug("Starting dynamic import from %s", kickOffUrl);
+            await this.state.save({ exportUrl: kickOffUrl, exportParams: params });
+        }
+        if (this.state) {
+            await this.getBulkDataClient();
+            const kickOffResponse = await this.bulkDataClient.kickOff(kickOffUrl, params);
+            const contentLocation = kickOffResponse.headers["content-location"] || "";
+            if (this.state) {
+                await this.state.save({ exportStatusLocation: contentLocation, status: "Waiting for export files to be generated" });
+                this.waitForExport(kickOffResponse);
+            }
+        }
+    }
+    /**
+     * Note that this method will resolve as soon as the manifest is downloaded.
+     * Internally, the job start downloading files and watch the progress but
+     * this method will not wait for it.
+     */
+    async startStaticImport(manifestUrl) {
+        if (this.state) {
+            this.debug("Starting static import from %s", manifestUrl);
+            await this.getBulkDataClient();
+            const { body } = await this.bulkDataClient.fetchExportManifest(manifestUrl);
+            if (this.state) {
+                await this.state.save({ exportProgress: 100, manifest: body });
+                this.waitForImport();
+            }
+        }
+    }
+    async waitForExport(kickOffResponse) {
+        this.debug("waitForExport");
+        try {
+            await this.getBulkDataClient();
+            const manifest = await this.bulkDataClient.waitForExport(kickOffResponse, async (pct) => {
+                if (!this.state) {
+                    throw new CustomError_1.CustomError(410, "The export has been canceled by the client");
+                }
+                else {
+                    await this.state.save({ exportProgress: pct });
+                }
+            });
+            await this.state.save({ manifest });
+            return this.waitForImport();
+        }
+        catch (ex) {
+            this.debug("waitForExport failed. %s", ex.message);
+        }
+    }
+    async waitForImport() {
+        this.debug("waitForImport");
+        await this.getBulkDataClient();
+        if (this.bulkDataClient.aborted) {
+            this.debug("waitForImport -> exiting because the job was canceled");
+            return this;
+        }
+        await this.state.save({ importProgress: 0 });
         const manifest = this.state.get("manifest");
         const outcomes = this.state.get("outcome");
-        const len = manifest.output?.length;
-        let done = 0;
+        const files = manifest?.output || [];
+        const len = files.length;
         const now = new Date();
         const folder = [
             now.getUTCFullYear(),
@@ -365,19 +451,22 @@ class ImportJob {
             now.getUTCMinutes(),
             now.getUTCSeconds()
         ].join(":") + "Z";
-        for (const file of manifest.output) {
-            this.state.set("status", `Importing file ${path_1.basename(file.url)}`);
-            await this.state.save();
+        let done = 0;
+        for (const file of files) {
+            if (!this.state) {
+                throw new CustomError_1.CustomError(410, "The export has been canceled by the client");
+            }
+            await this.state.save({ status: `Importing file ${path_1.basename(file.url)}` });
             try {
                 if (config_1.default.destination.type == "dev-null") {
-                    await client.downloadFile(file).promise(new DevNull_1.DevNull());
+                    await this.bulkDataClient.downloadFile(file).promise(new DevNull_1.DevNull());
                 }
                 else if (config_1.default.destination.type == "tmp-fs") {
-                    await client.downloadFile(file).promise(fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, this.state.id, path_1.basename(file.url))));
+                    await this.bulkDataClient.downloadFile(file).promise(fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, this.state.id, path_1.basename(file.url))));
                 }
                 else if (config_1.default.destination.type == "s3") {
                     const aws = (await Promise.resolve().then(() => __importStar(require("./aws")))).default;
-                    const stream = client.downloadFile(file).stream();
+                    const stream = this.bulkDataClient.downloadFile(file).stream();
                     const upload = new aws.S3.ManagedUpload({
                         params: {
                             Bucket: String(config_1.default.destination.options.bucketName),
@@ -391,6 +480,10 @@ class ImportJob {
                 outcomes.push(new OperationOutcome_1.OperationOutcome(`File from ${file.url} imported successfully`, 200, "information"));
             }
             catch (ex) {
+                if (ex instanceof lib_1.AbortError) {
+                    console.log(ex.message);
+                    return this;
+                }
                 console.log(`Error handling file ${file.url}`);
                 console.error(ex);
                 outcomes.push(ex);
@@ -398,18 +491,29 @@ class ImportJob {
             this.state.set("importProgress", Math.round((++done / len) * 100));
             await this.state.save();
         }
+        this.bulkDataClient.destroy();
         return this;
     }
 }
 exports.ImportJob = ImportJob;
 // -----------------------------------------------------------------------------
 async function cleanUp() {
+    debug("Checking for expired jobs...");
+    const now = Date.now();
     const ids = await lib_1.getJobIds();
+    const { jobsMaxAbsoluteAge, jobsMaxAge } = config_1.default;
     for (const id of ids) {
         const filePath = path_1.join(config_1.default.jobsPath, id, "state.json");
         if (lib_1.isFile(filePath)) {
-            const json = await lib_1.readJSON(filePath);
-            if (Date.now() - json.createdAt > config_1.default.jobsMaxAge * 60000) {
+            const { completedAt, createdAt } = await lib_1.readJSON(filePath);
+            if (completedAt) {
+                if (now - completedAt > jobsMaxAge * 60000) {
+                    debug("Deleting state for expired job #%s", id);
+                    await promises_1.rm(path_1.join(config_1.default.jobsPath, id), { recursive: true });
+                }
+            }
+            else if (now - createdAt > jobsMaxAbsoluteAge * 60000) {
+                debug("Deleting state for zombie job #%s", id);
                 await promises_1.rm(path_1.join(config_1.default.jobsPath, id), { recursive: true });
             }
         }

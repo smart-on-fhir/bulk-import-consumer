@@ -4,198 +4,227 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BulkDataClient = void 0;
+const util_1 = __importDefault(require("util"));
 const node_jose_1 = __importDefault(require("node-jose"));
-const got_1 = __importDefault(require("got"));
-const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
+const request_1 = __importDefault(require("./request"));
 const lib_1 = require("./lib");
 const CustomError_1 = require("./CustomError");
 const OperationOutcome_1 = require("./OperationOutcome");
+const auth_1 = require("./auth");
+const config_1 = __importDefault(require("./config"));
+const debug = util_1.default.debuglog("app");
+const debugOutgoingAuth = util_1.default.debuglog("app-auth-outgoing");
 class BulkDataClient {
     constructor(options) {
-        this.options = { verbose: true, ...options };
-        this.request = got_1.default.extend({
+        this.accessToken = "";
+        this._aborted = false;
+        /**
+         * A reference to the cancelable authorization request promise. This will
+         * only be set while the authorization request is pending. Used by the
+         * `cancel` method to abort the authorization request if it is currently
+         * running.
+         */
+        this.authRequest = null;
+        /**
+         * A reference to the cancelable kick-off request promise. This will only be
+         * set while the kick-off request is pending. Used by the `cancel` method to
+         * abort the kick-off request if it is currently running.
+         */
+        this.kickOffRequest = null;
+        /**
+         * A reference to the cancelable status request promise. This will only be
+         * set while the status request is pending. Used by the `cancel` method to
+         * abort the status request if it is currently running.
+         */
+        this.statusRequest = null;
+        /**
+         * Multiple file download streams may exist. We store references to them
+         * here so that we can destroy them on abort
+         */
+        this.downloadStreams = new Set();
+        this.id = node_jose_1.default.util.randomBytes(8).toString("hex");
+        this.abortController = new AbortController();
+        this.options = {
+            privateKey: config_1.default.privateKey,
+            accessTokenLifetime: config_1.default.accessTokensExpireIn * 60,
+            ...options
+        };
+        this.request = request_1.default.extend({
             context: {
-                verbose: this.options.verbose
+                authorize: async () => {
+                    this.accessToken = this._aborted ? "" : await this.getAccessToken();
+                    return this.accessToken;
+                }
             },
-            hooks: {
-                beforeRequest: [
-                    options => {
-                        if (options.context.verbose) {
-                            console.log(`\n-----------------------------------------------------`);
-                            console.log(`Request: ${options.method} ${options.url}`);
-                            console.log(`Headers:`, options.headers);
-                            const payload = options.body || options.form || options.json;
-                            if (payload) {
-                                console.log("Payload:", payload);
-                            }
-                        }
-                    }
-                ],
-                afterResponse: [
-                    async (response, retryWithMergedOptions) => {
-                        if (response.request.options.context.verbose) {
-                            console.log(`Response Headers:`, response.headers);
-                            if (response.body) {
-                                console.log(`Response:`, response.body);
-                            }
-                            console.log(`-----------------------------------------------------\n`);
-                        }
-                        // Unauthorized
-                        if (response.statusCode === 401 && !response.request.options.context.retried) {
-                            // Refresh the access token
-                            const token = await this.authorize();
-                            const updatedOptions = {
-                                headers: {
-                                    authorization: `bearer ${token}`
-                                },
-                                context: {
-                                    retried: true
-                                }
-                            };
-                            // Update the defaults
-                            got_1.default.mergeOptions(response.request.options, updatedOptions);
-                            // Make a new retry
-                            return retryWithMergedOptions(updatedOptions);
-                        }
-                        return response;
-                    }
-                ],
-                beforeError: [
-                    error => {
-                        const { response } = error;
-                        if (typeof response?.body == "object") {
-                            // @ts-ignore OperationOutcome errors
-                            if (response.body.resourceType === "OperationOutcome") {
-                                const oo = response.body;
-                                // @ts-ignore
-                                error.severity = oo.issue[0].severity;
-                                error.message = oo.issue[0].details?.text || oo.issue[0].diagnostics || response.statusMessage || "Unknown error";
-                                error.code = oo.issue[0].code || response.statusCode + "";
-                            }
-                            // @ts-ignore OAuth errors
-                            else if (response.body.error) {
-                                // @ts-ignore
-                                error.message = [response.body.error, response.body.error_description].filter(Boolean).join(": ");
-                                error.code = response.statusCode + "";
-                            }
-                        }
-                        return error;
-                    }
-                ]
+            headers: {
+                authorization: `Bearer ${this.accessToken}`
             }
+        });
+        BulkDataClient.instances[this.id] = this;
+    }
+    /**
+     * Get a BulkDataClient instance by its ID
+     */
+    static getInstance(id) {
+        const instance = BulkDataClient.instances[id];
+        if (!instance) {
+            throw new CustomError_1.CustomError(410, "Cannot find the Bulk Data Client instance corresponding to " +
+                "this import job. Perhaps the server was restarted and lost " +
+                "its runtime state. Please try running the import again.");
+        }
+        return instance;
+    }
+    get aborted() {
+        return this._aborted;
+    }
+    destroy() {
+        this.debug("Destroying the instance");
+        delete BulkDataClient.instances[this.id];
+    }
+    debug(message, ...rest) {
+        debug("BulkDataClient#%s: " + message, this.id, ...rest);
+    }
+    async cancel(reason = "Import canceled") {
+        this.debug("aborting...");
+        this._aborted = true;
+        // Abort wait timeouts (if any)
+        this.debug("aborting wait timeouts");
+        this.abortController.abort();
+        // Abort authorization request (if pending)
+        if (this.authRequest) {
+            this.debug("aborting authorization request");
+            this.authRequest.cancel(reason);
+            this.authRequest = null;
+        }
+        // Abort kick-off request (if pending)
+        if (this.kickOffRequest) {
+            this.debug("aborting kick-off request");
+            this.kickOffRequest.cancel(reason);
+            this.kickOffRequest = null;
+        }
+        // Abort status request (if pending)
+        if (this.statusRequest) {
+            this.debug("aborting status request");
+            this.statusRequest.cancel(reason);
+            this.statusRequest = null;
+        }
+        // Abort downloads (if any)
+        this.downloadStreams.forEach(stream => {
+            this.debug("aborting download from %s", stream.options.url.href);
+            this.downloadStreams.delete(stream);
+            stream.destroy();
         });
     }
-    async authorize() {
-        const { clientId, tokenUrl, accessTokenLifetime, privateKey } = this.options;
-        const claims = {
-            iss: clientId,
-            sub: clientId,
-            aud: tokenUrl,
-            exp: Math.round(Date.now() / 1000) + accessTokenLifetime,
-            jti: node_jose_1.default.util.randomBytes(10).toString("hex")
+    /**
+     * Gets an access token from the Data Provider
+     */
+    async getAccessToken() {
+        const options = {
+            clientId: this.options.clientId,
+            privateKey: this.options.privateKey,
+            baseUrl: this.options.providerBaseUrl,
+            accessTokenLifetime: this.options.accessTokenLifetime
         };
-        const key = await node_jose_1.default.JWK.asKey(privateKey, "json");
-        const token = jsonwebtoken_1.default.sign(claims, key.toPEM(true), {
-            algorithm: key.alg,
-            keyid: key.kid
-        });
-        const { body } = await this.request(tokenUrl, {
-            method: "POST",
-            responseType: "json",
-            form: {
-                scope: "system/*.*",
-                grant_type: "client_credentials",
-                client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                client_assertion: token
-            }
-        });
-        return body.access_token;
+        this.debug("Making authorization request to the data provider");
+        debugOutgoingAuth("Authorizing at data provider with options:", options);
+        const { request } = await auth_1.authorize(options);
+        this.authRequest = request;
+        const { body } = await this.authRequest;
+        debugOutgoingAuth("Received access token response from data provider:", body);
+        this.debug("Completed authorization request to data provider");
+        this.authRequest = null;
+        return body.access_token || "";
     }
     async kickOff(kickOffUrl, params = {}) {
         const body = {
             resourceType: "Parameters",
             parameter: []
         };
-        // _since (single valueInstant parameter) ----------------------------------
+        // _since (single valueInstant parameter) ------------------------------
         if (params._since) {
             body.parameter.push({
                 name: "_since",
                 valueInstant: params._since
             });
         }
-        // _outputFormat (single valueString parameter) ----------------------------
+        // _outputFormat (single valueString parameter) ------------------------
         if (params._outputFormat) {
             body.parameter.push({
                 name: "_outputFormat",
                 valueString: params._outputFormat
             });
         }
-        // patient (sent as one or more valueReference params) ---------------------
+        // patient (sent as one or more valueReference params) -----------------
         if (params.patient) {
             body.parameter = body.parameter.concat(lib_1.asArray(params.patient).map((id) => ({
                 name: "patient",
                 valueReference: { reference: `Patient/${id}` }
             })));
         }
-        // _type (sent as one or more valueString params) --------------------------
+        // _type (sent as one or more valueString params) ----------------------
         if (params._type) {
             body.parameter = body.parameter.concat(lib_1.asArray(params._type).map((type) => ({
                 name: "_type",
                 valueString: type
             })));
         }
-        // _elements (sent as one or more valueString params) ----------------------
+        // _elements (sent as one or more valueString params) ------------------
         if (params._elements) {
             body.parameter = body.parameter.concat(lib_1.asArray(params._elements).map((type) => ({
                 name: "_elements",
                 valueString: type
             })));
         }
-        // _typeFilter (sent as one or more valueString params) --------------------
+        // _typeFilter (sent as one or more valueString params) ----------------
         if (params._typeFilter) {
             body.parameter = body.parameter.concat(lib_1.asArray(params._typeFilter).map((type) => ({
                 name: "_typeFilter",
                 valueString: type
             })));
         }
-        // includeAssociatedData (sent as one or more valueString params) ----------
+        // includeAssociatedData (sent as one or more valueString params) ------
         if (params.includeAssociatedData) {
             body.parameter = body.parameter.concat(lib_1.asArray(params.includeAssociatedData).map((type) => ({
                 name: "includeAssociatedData",
                 valueString: type
             })));
         }
-        if (!this.accessToken) {
-            this.accessToken = await this.authorize();
-        }
-        return this.request(kickOffUrl, {
+        // this._aborted = false
+        this.debug("Making export kick-off request");
+        this.kickOffRequest = this.request(kickOffUrl, {
             json: body,
             method: "POST",
             followRedirect: false,
-            // throwHttpErrors: false,
             headers: {
                 accept: "application/fhir+json",
-                prefer: "respond-async",
-                authorization: `Bearer ${this.accessToken}`
+                prefer: "respond-async"
             }
+        });
+        return this.kickOffRequest.then(res => {
+            this.debug("Completed export kick-off request");
+            this.kickOffRequest = null;
+            return res;
         });
     }
     async waitForExport(kickOffResponse, onProgress) {
+        if (this._aborted) {
+            throw new CustomError_1.CustomError(410, "The export has been canceled by the client");
+        }
+        this.debug("Waiting for export");
         const contentLocation = kickOffResponse.headers["content-location"] + "";
         if (!contentLocation) {
             throw new CustomError_1.CustomError(400, "Trying to wait for export but the kick-off " +
                 "response did not include a content-location header.");
         }
-        if (!this.accessToken) {
-            this.accessToken = await this.authorize();
-        }
-        const { body, statusCode, headers } = await this.fetchExportManifest(contentLocation);
-        if (statusCode !== 200) {
+        this.statusRequest = this.fetchExportManifest(contentLocation);
+        const { body, statusCode, headers } = await this.statusRequest;
+        this.statusRequest = null;
+        if (!this._aborted && statusCode !== 200) {
             onProgress && await onProgress(parseFloat(headers["x-progress"] + "" || "0"));
-            await lib_1.wait(1000);
+            await lib_1.wait(1000, this.abortController.signal);
             return this.waitForExport(kickOffResponse, onProgress);
         }
-        await lib_1.wait(100);
+        await lib_1.wait(100, this.abortController.signal);
         onProgress && await onProgress(100);
         return body;
     }
@@ -207,9 +236,9 @@ class BulkDataClient {
      *   export is still in progress this will resolve with 202 responses and
      *   should be called again until status 200 is received
      */
-    async fetchExportManifest(location) {
-        if (!this.accessToken) {
-            this.accessToken = await this.authorize();
+    fetchExportManifest(location) {
+        if (this._aborted) {
+            throw new CustomError_1.CustomError(410, "The export has been canceled by the client");
         }
         return this.request(location, {
             responseType: "json",
@@ -219,16 +248,24 @@ class BulkDataClient {
         });
     }
     downloadFile(descriptor) {
+        if (this._aborted) {
+            throw new lib_1.AbortError("The export has been canceled by the client");
+        }
         const out = {
             stream: () => {
-                return this.request.stream(descriptor.url, {
-                    context: {
-                        verbose: this.options.verbose
-                    },
+                const stream = this.request.stream(descriptor.url, {
                     headers: {
                         authorization: `Bearer ${this.accessToken}`
                     }
                 });
+                this.downloadStreams.add(stream);
+                stream.once("close", () => {
+                    this.downloadStreams.delete(stream);
+                });
+                stream.once("readable", () => {
+                    this.debug("Downloading file %s", descriptor.url);
+                });
+                return stream;
             },
             promise: (destination) => {
                 return new Promise((resolve, reject) => {
@@ -243,3 +280,4 @@ class BulkDataClient {
     }
 }
 exports.BulkDataClient = BulkDataClient;
+BulkDataClient.instances = {};

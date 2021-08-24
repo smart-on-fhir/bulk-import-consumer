@@ -243,6 +243,12 @@
     function checkFormStatus() {
         const keyType = model.get("keyType")
         try {
+            if (!model.get("consumer_client_id").trim()) {
+                throw new Error("Data Consumer Client ID is required")
+            }
+            if (!model.get("provider_base_url").trim()) {
+                throw new Error("Data Provider Base URL is required")
+            }
             if (keyType === "jwks") {
                 validateJWK($("#jwk").val())
             }
@@ -265,7 +271,10 @@
         }
 
         const keyType = model.get("keyType")
-        const body = {};
+        const body = {
+            consumer_client_id: model.get("consumer_client_id"),
+            aud               : model.get("provider_base_url")
+        };
 
         if (keyType === "jwks-url") {
             body.jwks_uri = model.get("jwks_uri");
@@ -284,10 +293,7 @@
         })
         .done((client) => {
             console.log(client)
-            model.set({
-                client_id: client.client_id,
-                token_endpoint: client.token_endpoint
-            })
+            model.set({ client_id: client.client_id })
         })
         .fail((jqXHR, textStatus, errorThrown) => {
             console.log(errorThrown || textStatus, jqXHR.responseJSON.error_description)
@@ -297,6 +303,37 @@
         })
     }
 
+    function decodeToken(jwt) {
+        try {
+            return JSON.parse(atob(jwt.split(".")[1]))
+        } catch {
+            return null
+        }
+    }
+
+    function introspect(clientId) {
+        const client = decodeToken(clientId)
+        if (client) {
+            $("#client-aud").text(client.aud)
+            $("#client-iat").text(new Date(client.iat * 1000).toLocaleString())
+            $("#client-consumer_client_id").text(client.consumer_client_id)
+            if (client.jwks) {
+                $("#client-jwks").text(JSON.stringify(client.jwks))
+            } else {
+                $("#client-jwks").text(client.jwks_uri ? "N/A (using JWKS URL instead)" : "none")
+            }
+            if (client.jwks_uri) {
+                $("#client-jwks_uri").text(client.jwks_uri)
+            } else {
+                $("#client-jwks_uri").text(client.jwks ? "N/A (using JWKS instead)" : "none")
+            }
+            $(".client-info").show()
+        } else {
+            $(".client-info").hide()
+        }
+    }
+
+    
 
     // Begin Data listeners ----------------------------------------------------
     model.on("change:loading", (e) => {
@@ -338,22 +375,16 @@
 
     model.on("change:client_id", e => {
         $("#client_id").val(e.data.newValue)
+        // console.log("client_id:", decodeToken(e.data.newValue))
+        introspect(e.data.newValue)
     })
     
-    model.on("change:token_endpoint", e => {
-        $("#token_endpoint").val(e.data.newValue)
-    })
-
-    model.on("change:client_id change:token_endpoint", () => {
-        const hasClient = (model.get("client_id") && model.get("token_endpoint"));
-        $("#registration-section").toggle(!hasClient)
-        $("#client-section").toggle(!!hasClient)
+    model.on("change:client_id", e => {
+        if (e.data.newValue) {
+            new bootstrap.Tab($("#tab-introspect")[0]).show()
+        }
     })
     
-    model.on("change:token_endpoint", e => {
-        $("#token_endpoint").val(e.data.newValue)
-    })
-
     model.on("change:generatedPublicJWK", e => {
         if (model.get("generatedKeysDisplayType") === "jwk") {
             $("#generated-public-key").val(
@@ -383,12 +414,12 @@
         }
     })
 
-    model.on("change:showGenerator", e => {
-        $("#generator").toggle(!!e.data.newValue)
+    model.on("change:consumer_client_id", e => {
+        $("#consumer_client_id").val(e.data.newValue)
     })
 
-    model.on("change:showGenerator", (e) => {
-        $("#show-generator").prop("checked", e.data.newValue)
+    model.on("change:provider_base_url", e => {
+        $("#provider_base_url").val(e.data.newValue)
     })
 
     // model.on("change", () => console.log(model.dump()))
@@ -411,6 +442,16 @@
         model.set("jwks_uri", e.target.value)
         checkFormStatus()
     })
+
+    $("#consumer_client_id").on("input", e => {
+        model.set("consumer_client_id", e.target.value)
+        checkFormStatus()
+    })
+
+    $("#provider_base_url").on("input", e => {
+        model.set("provider_base_url", e.target.value)
+        checkFormStatus()
+    })
     
     $("#jwk").on("input", function(e) { 
         try {
@@ -423,9 +464,11 @@
         }
         this.parentElement.classList.add("was-validated")
         checkFormStatus()
-    })
+    });
 
-    $("#alg").on("change", e => model.set("alg", $(e.target).val()))
+    $("#alg").on("change", e => model.set("alg", $(e.target).val()));
+
+    $("#client_id").on("input", e => model.set("client_id", $(e.target).val()));
 
     $("#generate").on("click", generateKeys)
 
@@ -443,41 +486,86 @@
 
     $("#clear-client").on("click", () => {
         model.set({
-            client_id: "",
-            token_endpoint: "",
-            generatedPublicJWK: "",
-            generatedPrivateJWK: "",
-            generatedPublicPEM: "",
-            generatedPrivatePEM: "",
-            showGenerator: false,
-            jwk: ""
+            keyType                 : "jwks-url",
+            jwk                     : "",
+            jwks_uri                : "",
+            consumer_client_id      : "",
+            provider_base_url       : "",
+            
+            generatedPublicJWK      : "",
+            generatedPrivateJWK     : "",
+            generatedPublicPEM      : "",
+            generatedPrivatePEM     : "",
+            // generatedKeysDisplayType: "jwk",
+            // alg                     : "ES384",
+            // client_id               : "",
         })
     })
 
-    $("#show-generator").on("click", () => {
-        model.set("showGenerator", !!$("#show-generator").prop("checked"))
+    $("form").on("submit", register)
+
+    $("#tab-info").one("shown.bs.tab", e => {
+        fetch("/info").then(res => res.json())
+            .then(items => {
+                const table = $('<table class="table table-hover"><tbody></tbody></table>')
+                const tbody = table.find("tbody")
+
+                items.forEach(({ label, value, description }) => {
+                    const tr = $("<tr>")
+                    tr.append($('<th class="text-nowrap" scope="row"/>').text(label))
+
+                    const td1 = $('<td style="width:33%; word-wrap:break-word; word-break:break-all;"/>')
+                    const code = $('<code/>');
+                    if (value && typeof value == "object") {
+                        code.text(JSON.stringify(value))
+                    }
+                    else {
+                        code.text(value)
+                    }
+                    td1.append(code)
+                    tr.append(td1)
+
+                    tr.append($('<td class="text-muted"/>').text(description))
+
+                    tbody.append(tr)
+                })
+
+                $(".info-table-wrap").empty().append(table)
+            })
     })
 
-    $("form").on("submit", register)
+    $('[data-copy]').on("click", function() {
+        const selector = $(this).attr("data-copy");
+        if (selector) {
+            const el = $(selector)[0];
+            if (el && el.focus && el.select) {
+                el.focus();
+                el.select();
+                document.execCommand('copy');
+            }
+        }
+    })
 
     // End UI Listeners --------------------------------------------------------
 
     // INIT --------------------------------------------------------------------
     model.set({
-        keyType: "jwks",
+        keyType: "jwks-url",
         generatedKeysDisplayType: "jwk",
         alg: "ES384",
         loading: false,
         client_id: "",
-        token_endpoint: "",
         generatedPublicJWK: "",
         generatedPrivateJWK: "",
         generatedPublicPEM: "",
         generatedPrivatePEM: "",
-        showGenerator: false,
+        consumer_client_id: "",
+        provider_base_url: "",
         jwk: ""
     });
 
-    checkFormStatus()    
+    $(".origin").text(location.origin)
+
+    checkFormStatus()
 
 })(jQuery);

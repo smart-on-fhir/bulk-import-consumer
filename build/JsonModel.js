@@ -43,8 +43,13 @@ class JsonModel {
     unset(key) {
         delete this.state[key];
     }
-    async save() {
+    async save(props) {
         if (fs_1.existsSync(path_1.join(config_1.default.jobsPath, this.id))) {
+            if (props) {
+                for (let key in props) {
+                    this.set(key, props[key]);
+                }
+            }
             await promises_1.default.writeFile(this.path, JSON.stringify(this.toJSON(), null, 4));
         }
     }

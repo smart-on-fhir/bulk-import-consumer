@@ -6,6 +6,13 @@ import * as util from "util"
 import { CustomError } from "./CustomError"
 import { ProblemSeverity, JsonValue } from "../types";
 import config from "./config"
+import { basename } from "path/posix";
+
+export class AbortError extends Error {
+    constructor(message = "Operation aborted") {
+        super(message)
+    }
+}
 
 
 const RE_GT   = />/g;
@@ -25,6 +32,14 @@ export function htmlEncode(input: string)
 
 export function asArray(x: any): any[] {
     return Array.isArray(x) ? x : [x]
+}
+
+export function truncateUrl(url: string) {
+    const _url = new URL(url)
+    if (_url.pathname != "/") {
+        _url.pathname = ".../" + basename(_url.pathname)
+    }
+    return _url.href
 }
 
 export function assert(
@@ -98,12 +113,22 @@ export function routeHandler(fn: RequestHandler): RequestHandler
 export function wait(ms: number, signal?: AbortSignal)
 {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, ms)
-        if (signal) {
-            signal.addEventListener("abort", () => {
+        const timer = setTimeout(() => {
+            if (signal) {
+                signal.removeEventListener("abort", abort);
+            }
+            resolve(true)
+        }, ms);
+
+        function abort() {
+            if (timer) {
                 clearTimeout(timer);
-                reject(new Error("Waiting aborted"))
-            }, { once: true });
+            }
+            reject(new AbortError("Waiting aborted"))
+        }
+
+        if (signal) {
+            signal.addEventListener("abort", abort);
         }
     });
 }
@@ -139,7 +164,7 @@ export async function readJSON<T=JsonValue>(path: string): Promise<T>
     return readFile(path).then(json => parseJSON<T>(json));
 }
 
- /**
+/**
  * Parses the given json string into a JSON object. Internally it uses the
  * JSON.parse() method but adds three things to it:
  * 1. Returns a promise

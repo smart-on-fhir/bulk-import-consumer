@@ -16,7 +16,7 @@ const schema = {
     HOST: {
         type: String,
         optional: true,
-        default: "localhost"
+        default: "0.0.0.0"
     },
     JOBS_PATH: {
         type: String,
@@ -57,10 +57,6 @@ const schema = {
         type: String
     },
     EXPORT_CLIENT_TOKEN_URL: {
-        optional: false,
-        type: String
-    },
-    EXPORT_CLIENT_CLIENT_ID: {
         optional: false,
         type: String
     },
@@ -113,6 +109,7 @@ const config = {
     jobsPath: path_1.join(__dirname, "..", env.JOBS_PATH),
     jobsIdLength: env.JOBS_ID_LENGTH,
     jobsMaxAge: env.JOBS_MAX_AGE,
+    jobsMaxAbsoluteAge: env.JOBS_MAX_AGE * 2,
     jsonContentTypes: env.JSON_CONTENT_TYPES.trim().split(/\s*,\s*/),
     jwtSecret: env.JWT_SECRET,
     accessTokensExpireIn: env.ACCESS_TOKEN_EXPIRE_IN,
@@ -121,8 +118,7 @@ const config = {
     privateKey: JSON.parse(env.PRIVATE_KEY),
     exportClient: {
         serverURL: env.EXPORT_CLIENT_SERVER_URL,
-        tokenURL: env.EXPORT_CLIENT_TOKEN_URL,
-        clientId: env.EXPORT_CLIENT_CLIENT_ID,
+        tokenURL: env.EXPORT_CLIENT_TOKEN_URL
     },
     destination: {
         type: env.DESTINATION_TYPE,

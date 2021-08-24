@@ -60,9 +60,14 @@ export class JsonModel<T=Record<string, any>>
         delete this.state[key]
     }
 
-    public async save(): Promise<void>
+    public async save(props?: Partial<T>): Promise<void>
     {
         if (existsSync(join(config.jobsPath, this.id))) {
+            if (props) {
+                for (let key in props) {
+                    this.set(key, props[key])
+                }
+            }
             await fs.writeFile(this.path, JSON.stringify(this.toJSON(), null, 4))
         }
     }
