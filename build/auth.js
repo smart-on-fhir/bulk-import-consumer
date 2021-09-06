@@ -172,7 +172,7 @@ async function getPublicKeys(jwksOrUri) {
  */
 async function tokenHandler(req, res, next) {
     debugIncomingAuth("tokenHandler -> received authorization request");
-    const { originalUrl, body: { client_assertion_type, client_assertion } } = req;
+    const { originalUrl, body: { client_assertion_type, client_assertion } } = req; // console.log(req.body)
     const algorithms = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"];
     const aud = lib_1.getRequestBaseURL(req) + originalUrl;
     // client_assertion_type is required
@@ -219,7 +219,7 @@ async function tokenHandler(req, res, next) {
     }
     // Validate authenticationToken.aud (must equal this url)
     if (aud.replace(/^https?/, "") !== authenticationToken.aud.replace(/^https?/, "")) {
-        return next(new OAuthError_1.OAuthError(400, "invalid_request", "Invalid 'aud'"));
+        return next(new OAuthError_1.OAuthError(400, "invalid_request", "Invalid 'aud'. Expected %s but got %s", aud, authenticationToken.aud));
     }
     if (authenticationToken.iss !== authenticationToken.sub) {
         return next(new OAuthError_1.OAuthError(400, "invalid_request", "Invalid 'iss' or 'sub' token claim"));

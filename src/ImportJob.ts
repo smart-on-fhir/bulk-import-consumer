@@ -1,4 +1,5 @@
 import util                                from "util" 
+import events                              from "events"
 import { NextFunction, Request, Response } from "express"
 import { join, basename }                  from "path"
 import { rm }                              from "fs/promises"
@@ -6,11 +7,11 @@ import { createWriteStream }               from "fs"
 import { Parameters }                      from "fhir/r4";
 import { CustomError }                     from "./CustomError"
 import { OperationOutcome }                from "./OperationOutcome"
-import { BulkData, ImportServer }                        from "../types"
+import { BulkData, ImportServer }          from "../types"
 import { BulkDataClient }                  from "./BulkDataClient"
 import { JsonModel }                       from "./JsonModel"
 import config                              from "./config"
-import { authorizeIncomingRequest, getTokenEndpointFromBaseUrl }        from "./auth"
+import { authorizeIncomingRequest }        from "./auth"
 import { DevNull }                         from "./DevNull"
 import {
     getJobIds,
@@ -19,8 +20,16 @@ import {
     readJSON,
     assert,
     getParameter,
-    AbortError
+    AbortError,
+    template
 } from "./lib"
+import ParseNDJSON from "./ParseNDJSON"
+import StringifyNDJSON from "./StringifyNDJSON"
+import { Stream } from "stream"
+import ValidateFHIR from "./ValidateFHIR"
+import FHIRTransform from "./FHIRTransform"
+
+events.defaultMaxListeners = 30
 
 const debug = util.debuglog("app")
 
@@ -553,6 +562,7 @@ export class ImportJob
             return this.waitForImport()
         } catch (ex) {
             this.debug("waitForExport failed. %s", ex.message)
+            this.bulkDataClient.destroy()
         }
     }
 
@@ -582,6 +592,8 @@ export class ImportJob
         ].join(":") + "Z";
 
         let done = 0
+
+        const counters: { [key: string]: number } = {}
         
         for (const file of files) {
             if (!this.state) {
@@ -591,25 +603,27 @@ export class ImportJob
             await this.state.save({ status: `Importing file ${basename(file.url)}` })
             
             try {
-                if (config.destination.type == "dev-null") {
-                    await this.bulkDataClient.downloadFile(file).promise(new DevNull())
-                }
-                else if (config.destination.type == "tmp-fs") {
-                    await this.bulkDataClient.downloadFile(file).promise(createWriteStream(join(config.jobsPath, this.state.id, basename(file.url))))
-                }
-                else if (config.destination.type == "s3") {
-                    const aws = (await import("./aws")).default
-                    const stream = this.bulkDataClient.downloadFile(file).stream();
-                    const upload = new aws.S3.ManagedUpload({
-                        params: {
-                            Bucket: String(config.destination.options.bucketName),
-                            Key: folder + "/" + basename(file.url),
-                            Body: stream,
-                            ContentType: "application/ndjson"
-                        }
-                    });
-                    await upload.promise()
-                }
+                counters[file.type] = counters[file.type] ? counters[file.type] + 1 : 1;
+                await this.downloadFile(file, counters)
+                // if (config.destination.type == "dev-null") {
+                //     await this.bulkDataClient.downloadFilePromise(file, new DevNull())
+                // }
+                // else if (config.destination.type == "tmp-fs") {
+                //     await this.bulkDataClient.downloadFilePromise(file, createWriteStream(join(config.jobsPath, this.state.id, basename(file.url))))
+                // }
+                // else if (config.destination.type == "s3") {
+                //     const aws = (await import("./aws")).default
+                //     const stream = this.bulkDataClient.downloadFileStream(file);
+                //     const upload = new aws.S3.ManagedUpload({
+                //         params: {
+                //             Bucket: String(config.destination.options.bucketName),
+                //             Key: folder + "/" + basename(file.url),
+                //             Body: stream,
+                //             ContentType: "application/ndjson"
+                //         }
+                //     });
+                //     await upload.promise()
+                // }
                 outcomes.push(new OperationOutcome(`File from ${file.url} imported successfully`, 200, "information"))
             } catch (ex) {
                 if (ex instanceof AbortError) {
@@ -627,6 +641,76 @@ export class ImportJob
         this.bulkDataClient.destroy()
 
         return this
+    }
+
+    downloadFile(file: BulkData.ExportManifestFile, counters: any) {
+
+        return new Promise((resolve, reject) => {
+
+            const errors: string[] = [];
+
+            const downloadStream = this.bulkDataClient.downloadFileStream(file);
+
+            downloadStream.once("error", e => errors.push("Error downloading file: " + e.stack));
+
+            // Parse and validate NDJSON
+            let pipeline: Stream = downloadStream.pipe(new ParseNDJSON())
+
+            // Validate FHIR NDJSON
+            pipeline = pipeline.pipe(new ValidateFHIR())
+
+            // Apply any custom FHIR resource transformations
+            pipeline = pipeline.pipe(new FHIRTransform())
+
+            // Convert back to NDJSON string
+            pipeline = pipeline.pipe(new StringifyNDJSON())
+
+            // Discard the file (do not store it anywhere)
+            if (config.destination.type == "dev-null") {
+                pipeline = pipeline.pipe(new DevNull())
+                pipeline.once("finish", resolve);
+                pipeline.once("error", e => reject(new OperationOutcome(e.message + ": " + errors.join(";"), 500)));
+                return;
+            }
+
+            const filename = template(config.downloadFileName, {
+                jobId       : this.state.id,
+                fileNumber  : counters[file.type],
+                resourceType: file.type,
+                originalName: basename(file.url)
+            });
+
+            // Save to local FS (temporary)
+            if (config.destination.type == "tmp-fs") {
+                this.debug(`Writing data from ${file.url} to ${filename}`)
+                const writeStream = createWriteStream(join(config.jobsPath, filename));
+                writeStream.once("error", e => errors.push("Error writing file: " + e.stack));
+                pipeline = pipeline.pipe(writeStream)
+                pipeline.once("finish", resolve);
+                pipeline.once("error", e => reject(new OperationOutcome(e.message + ": " + errors.join(";"), 500)));
+            }
+            
+            // Save to S3 bucket
+            else if (config.destination.type == "s3") {
+                import("./aws").then(aws => {
+                    this.debug(`Uploading data from ${file.url} to S3: ${config.destination.options.bucketName}/${filename}`)
+                    const stream = this.bulkDataClient.downloadFileStream(file);
+                    const upload = new aws.default.S3.ManagedUpload({
+                        params: {
+                            Bucket     : String(config.destination.options.bucketName),
+                            Key        : filename,
+                            Body       : stream,
+                            ContentType: "application/ndjson"
+                        }
+                    });
+                    return upload.promise()
+                }).then(resolve);
+            }
+
+            else {
+                reject(new Error(`Unknown config.destination.type "${config.destination.type}"`))
+            }
+        })
     }
 }
 

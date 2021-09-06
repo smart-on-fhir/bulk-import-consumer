@@ -44,12 +44,7 @@ sign tokens
   issued by this server in minutes. Defaults to `5`.
 - `NDJSON_MAX_LINE_LENGTH` - (optional, number) The longest (as number of characters) NDJSON line that we can parse without taking too much memory. Defaults to `500000`
 - `PUBLIC_KEY` - (**REQUIRED**, string) The public key should be provided while registering this server as a client of a Data Provider
-- `PRIVATE_KEY` - (**REQUIRED**, string) The private key used by this server as to sign tokens sent to `EXPORT_CLIENT_TOKEN_URL`. This should be a JWK as JSON string
-- `EXPORT_CLIENT_SERVER_URL` - (**REQUIRED**, string) The base URL of the Data 
-  Provider's (bulk data capable) FHIR server.
-- `EXPORT_CLIENT_TOKEN_URL` - (**REQUIRED**, string) The token url of the Data Provider's auth server.
-- `EXPORT_CLIENT_CLIENT_ID` - (**REQUIRED**, string) The client_id of this
-  server as registered (as a client) with the data provider
+- `PRIVATE_KEY` - (**REQUIRED**, string) The private key used by this server as to sign tokens sent to the Data Provider. This should be a JWK as JSON string
 - `DESTINATION_TYPE` - (optional, string) What to do with imported files. Options are:
     - `dev-null` (default) - discard them immediately
     - `tmp-fs` - store them in the file system. See `JOBS_PATH`, `JOBS_ID_LENGTH` and `JOBS_MAX_AGE`.
@@ -91,16 +86,13 @@ Once a public key is provided as `JWK` or `JWKS URI`, click "Register" and you'l
 
 ### 2. Registering this server as a client of a Data Provider
 This is basically the same procedure but in reversed order.
-1. You need to have a public/private key pair. The server already has those kays pre-configured. You can change/re-generate those kays if you want (see below).
+You need to have a public/private key pair. The server already has those kays pre-configured.
+You can change/re-generate those kays if you want (see below).
     - Provide toy public key as JWK - you can find your public key in `PUBLIC_KEY` in your
       `.env` configuration file.
     - Provide a JWKS URL - your jwks url is `http://{HOST}:{PORT}/jwks`. Note that this will
       only work if this server is deployed on the internet. If it is running on localhost or
       in your local network, the Data Provider won't be able to access it.
-2. Once you register this server as a client, update the following variables in the configuration file:
-    - `EXPORT_CLIENT_SERVER_URL`
-    - `EXPORT_CLIENT_TOKEN_URL`
-    - `EXPORT_CLIENT_CLIENT_ID`
 
 ## Generating Keys
 The server comes with a key generator which can also be used to generate its own keys. To do so:

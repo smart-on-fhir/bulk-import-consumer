@@ -47,19 +47,6 @@ const schema = {
         optional: true,
         default: 5
     },
-    NDJSON_MAX_LINE_LENGTH: {
-        type: Number,
-        optional: true,
-        default: 500000
-    },
-    EXPORT_CLIENT_SERVER_URL: {
-        optional: false,
-        type: String
-    },
-    EXPORT_CLIENT_TOKEN_URL: {
-        optional: false,
-        type: String
-    },
     PRIVATE_KEY: {
         optional: false,
         type: String
@@ -99,6 +86,21 @@ const schema = {
         type: String,
         optional: true,
         default: "us-east-1"
+    },
+    NDJSON_MAX_LINE_LENGTH: {
+        type: Number,
+        optional: true,
+        default: 1000000
+    },
+    DOWNLOAD_FILE_NAME: {
+        type: String,
+        optional: true,
+        default: "{originalName}"
+    },
+    INLINE_ATTACHMENTS: {
+        type: String,
+        optional: true,
+        default: "none"
     }
 };
 const env = ts_dotenv_1.load(schema);
@@ -116,10 +118,10 @@ const config = {
     ndjsonMaxLineLength: env.NDJSON_MAX_LINE_LENGTH,
     publicKey: JSON.parse(env.PUBLIC_KEY),
     privateKey: JSON.parse(env.PRIVATE_KEY),
-    exportClient: {
-        serverURL: env.EXPORT_CLIENT_SERVER_URL,
-        tokenURL: env.EXPORT_CLIENT_TOKEN_URL
-    },
+    downloadFileName: env.DOWNLOAD_FILE_NAME,
+    inlineAttachments: env.INLINE_ATTACHMENTS == "none" || env.INLINE_ATTACHMENTS == "all" ?
+        env.INLINE_ATTACHMENTS :
+        env.INLINE_ATTACHMENTS.trim().split(/\s*,\s*/),
     destination: {
         type: env.DESTINATION_TYPE,
         options: {

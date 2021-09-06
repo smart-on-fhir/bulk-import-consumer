@@ -24,6 +24,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImportJob = exports.getImportPingParameters = exports.validateKickOffBody = exports.validateKickOffHeaders = void 0;
 const util_1 = __importDefault(require("util"));
+const events_1 = __importDefault(require("events"));
 const path_1 = require("path");
 const promises_1 = require("fs/promises");
 const fs_1 = require("fs");
@@ -35,6 +36,11 @@ const config_1 = __importDefault(require("./config"));
 const auth_1 = require("./auth");
 const DevNull_1 = require("./DevNull");
 const lib_1 = require("./lib");
+const ParseNDJSON_1 = __importDefault(require("./ParseNDJSON"));
+const StringifyNDJSON_1 = __importDefault(require("./StringifyNDJSON"));
+const ValidateFHIR_1 = __importDefault(require("./ValidateFHIR"));
+const FHIRTransform_1 = __importDefault(require("./FHIRTransform"));
+events_1.default.defaultMaxListeners = 30;
 const debug = util_1.default.debuglog("app");
 function validateKickOffHeaders(req) {
     const { 
@@ -209,7 +215,6 @@ class ImportJob {
             // have to also reply once with a progress value of 100%. On the
             // next call we will proceed to the success response.
             if (progress === 100) {
-                job.state.set("status", "Importing completed");
                 await job.state.save({
                     status: "Importing completed",
                     completedAt: Date.now()
@@ -422,11 +427,16 @@ class ImportJob {
                     await this.state.save({ exportProgress: pct });
                 }
             });
+            if (!manifest.output?.length) {
+                this.debug("waitForExport -> manifest: %o", manifest);
+                throw new Error("waitForExport -> no files found in the export manifest");
+            }
             await this.state.save({ manifest });
             return this.waitForImport();
         }
         catch (ex) {
             this.debug("waitForExport failed. %s", ex.message);
+            this.bulkDataClient.destroy();
         }
     }
     async waitForImport() {
@@ -452,31 +462,34 @@ class ImportJob {
             now.getUTCSeconds()
         ].join(":") + "Z";
         let done = 0;
+        const counters = {};
         for (const file of files) {
             if (!this.state) {
                 throw new CustomError_1.CustomError(410, "The export has been canceled by the client");
             }
             await this.state.save({ status: `Importing file ${path_1.basename(file.url)}` });
             try {
-                if (config_1.default.destination.type == "dev-null") {
-                    await this.bulkDataClient.downloadFile(file).promise(new DevNull_1.DevNull());
-                }
-                else if (config_1.default.destination.type == "tmp-fs") {
-                    await this.bulkDataClient.downloadFile(file).promise(fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, this.state.id, path_1.basename(file.url))));
-                }
-                else if (config_1.default.destination.type == "s3") {
-                    const aws = (await Promise.resolve().then(() => __importStar(require("./aws")))).default;
-                    const stream = this.bulkDataClient.downloadFile(file).stream();
-                    const upload = new aws.S3.ManagedUpload({
-                        params: {
-                            Bucket: String(config_1.default.destination.options.bucketName),
-                            Key: folder + "/" + path_1.basename(file.url),
-                            Body: stream,
-                            ContentType: "application/ndjson"
-                        }
-                    });
-                    await upload.promise();
-                }
+                counters[file.type] = counters[file.type] ? counters[file.type] + 1 : 1;
+                await this.downloadFile(file, counters);
+                // if (config.destination.type == "dev-null") {
+                //     await this.bulkDataClient.downloadFilePromise(file, new DevNull())
+                // }
+                // else if (config.destination.type == "tmp-fs") {
+                //     await this.bulkDataClient.downloadFilePromise(file, createWriteStream(join(config.jobsPath, this.state.id, basename(file.url))))
+                // }
+                // else if (config.destination.type == "s3") {
+                //     const aws = (await import("./aws")).default
+                //     const stream = this.bulkDataClient.downloadFileStream(file);
+                //     const upload = new aws.S3.ManagedUpload({
+                //         params: {
+                //             Bucket: String(config.destination.options.bucketName),
+                //             Key: folder + "/" + basename(file.url),
+                //             Body: stream,
+                //             ContentType: "application/ndjson"
+                //         }
+                //     });
+                //     await upload.promise()
+                // }
                 outcomes.push(new OperationOutcome_1.OperationOutcome(`File from ${file.url} imported successfully`, 200, "information"));
             }
             catch (ex) {
@@ -494,11 +507,66 @@ class ImportJob {
         this.bulkDataClient.destroy();
         return this;
     }
+    downloadFile(file, counters) {
+        return new Promise((resolve, reject) => {
+            const errors = [];
+            const downloadStream = this.bulkDataClient.downloadFileStream(file);
+            downloadStream.once("error", e => errors.push("Error downloading file: " + e.stack));
+            // Parse and validate NDJSON
+            let pipeline = downloadStream.pipe(new ParseNDJSON_1.default());
+            // Validate FHIR NDJSON
+            pipeline = pipeline.pipe(new ValidateFHIR_1.default());
+            // Apply any custom FHIR resource transformations
+            pipeline = pipeline.pipe(new FHIRTransform_1.default());
+            // Convert back to NDJSON string
+            pipeline = pipeline.pipe(new StringifyNDJSON_1.default());
+            // Discard the file (do not store it anywhere)
+            if (config_1.default.destination.type == "dev-null") {
+                pipeline = pipeline.pipe(new DevNull_1.DevNull());
+                pipeline.once("finish", resolve);
+                pipeline.once("error", e => reject(new OperationOutcome_1.OperationOutcome(e.message + ": " + errors.join(";"), 500)));
+                return;
+            }
+            const filename = lib_1.template(config_1.default.downloadFileName, {
+                jobId: this.state.id,
+                fileNumber: counters[file.type],
+                resourceType: file.type,
+                originalName: path_1.basename(file.url)
+            });
+            // Save to local FS (temporary)
+            if (config_1.default.destination.type == "tmp-fs") {
+                this.debug(`Writing data from ${file.url} to ${filename}`);
+                const writeStream = fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, filename));
+                writeStream.once("error", e => errors.push("Error writing file: " + e.stack));
+                pipeline = pipeline.pipe(writeStream);
+                pipeline.once("finish", resolve);
+                pipeline.once("error", e => reject(new OperationOutcome_1.OperationOutcome(e.message + ": " + errors.join(";"), 500)));
+            }
+            // Save to S3 bucket
+            else if (config_1.default.destination.type == "s3") {
+                Promise.resolve().then(() => __importStar(require("./aws"))).then(aws => {
+                    this.debug(`Uploading data from ${file.url} to S3: ${config_1.default.destination.options.bucketName}/${filename}`);
+                    const stream = this.bulkDataClient.downloadFileStream(file);
+                    const upload = new aws.default.S3.ManagedUpload({
+                        params: {
+                            Bucket: String(config_1.default.destination.options.bucketName),
+                            Key: filename,
+                            Body: stream,
+                            ContentType: "application/ndjson"
+                        }
+                    });
+                    return upload.promise();
+                }).then(resolve);
+            }
+            else {
+                reject(new Error(`Unknown config.destination.type "${config_1.default.destination.type}"`));
+            }
+        });
+    }
 }
 exports.ImportJob = ImportJob;
 // -----------------------------------------------------------------------------
 async function cleanUp() {
-    debug("Checking for expired jobs...");
     const now = Date.now();
     const ids = await lib_1.getJobIds();
     const { jobsMaxAbsoluteAge, jobsMaxAge } = config_1.default;

@@ -1,12 +1,15 @@
 import { NextFunction, RequestHandler, Request, Response } from "express";
 import { Parameters, ParametersParameter } from "fhir/r4";
 import { statSync, unlinkSync } from "fs";
-import { readFile, readdir } from "fs/promises";
+import { readFile, readdir, writeFile } from "fs/promises";
+import lockfile from "lockfile"
 import * as util from "util"
 import { CustomError } from "./CustomError"
-import { ProblemSeverity, JsonValue } from "../types";
+import { ProblemSeverity, JsonValue, JsonObject, JsonPrimitive } from "../types";
 import config from "./config"
 import { basename } from "path/posix";
+
+const debug = util.debuglog("app")
 
 export class AbortError extends Error {
     constructor(message = "Operation aborted") {
@@ -160,9 +163,49 @@ export function deleteFileIfExists(path: string)
 /**
  * Read a file and parse it as JSON.
  */
-export async function readJSON<T=JsonValue>(path: string): Promise<T>
+export async function readJSON<T=JsonValue>(path: string, retry=10): Promise<T>
 {
-    return readFile(path).then(json => parseJSON<T>(json));
+    return new Promise((resolve, reject) => {
+        // debug(`Acquiring lock ${path}.lock`)
+        lockfile.lock(`${path}.lock`, { retries: 10, retryWait: 50 }, e => {
+            if (e) {
+                debug(`Acquiring lock ${path}.lock failed: %s`, e)
+                return reject(e)
+            }
+            return readFile(path, "utf8").then(json => {
+                // debug(`Releasing lock ${path}.lock`)
+                lockfile.unlock(`${path}.lock`, err => {
+                    if (err) {
+                        debug(`Releasing lock ${path}.lock failed: %s`, err)
+                        return reject(err)
+                    }
+                })
+                return parseJSON<T>(json).then(json => resolve(json))
+            });
+        })
+    })
+}
+
+export async function writeJSON(path: string, data: any) {
+    return new Promise((resolve, reject) => {
+        // debug(`Acquiring lock ${path}.lock`)
+        lockfile.lock(`${path}.lock`, { retries: 10, retryWait: 50 }, e => {
+            if (e) {
+                debug(`Acquiring lock ${path}.lock failed: %s`, e)
+                return reject(e)
+            }
+            return writeFile(path, JSON.stringify(data, null, 4)).then(json => {
+                // debug(`Releasing lock ${path}.lock`)
+                lockfile.unlock(`${path}.lock`, err => {
+                    if (err) {
+                        debug(`Releasing lock ${path}.lock failed: %s`, err)
+                        return reject(err)
+                    }
+                    resolve(data)
+                })
+            });
+        })
+    })
 }
 
 /**
@@ -206,5 +249,9 @@ export async function getJobIds() {
     return entries.filter(entry => {
         return entry.isDirectory() && entry.name.match(/^[a-fA-F0-9]+$/);
     }).map(entry => entry.name);
+}
+
+export function template(tpl: string, data: {[key: string]: string}) {
+    return tpl.replace(/\{(.+?)\}/g, (match, name) => data[name] || match)
 }
 

@@ -145,11 +145,17 @@ app.use((error: Error, req: Request, res: Response, next: any) => {
     res.status(500).end('Internal Server Error')
 })
 
-const server = app.listen(config.port, config.host, () => {
-    let addr = server.address();
-    if (addr && typeof addr != "string") {
-        const { address, port } = addr;
-        addr = `http://${address}:${port}`;
-    }
-    console.log(`Server listening on ${addr}`);
-})
+// Start the server if ran directly (tests import it and start it manually)
+/* istanbul ignore if */
+if (require.main?.filename === __filename) {
+    const server = app.listen(config.port, config.host, () => {
+        let addr = server.address();
+        if (addr && typeof addr != "string") {
+            const { address, port } = addr;
+            addr = `http://${address}:${port}`;
+        }
+        console.log(`Server listening on ${addr}`);
+    })
+}
+
+export = app;

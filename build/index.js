@@ -2,7 +2,6 @@
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
-Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const util_1 = __importDefault(require("util"));
@@ -112,11 +111,16 @@ app.use((error, req, res, next) => {
     console.log("Global Error Handler: %o", error);
     res.status(500).end('Internal Server Error');
 });
-const server = app.listen(config_1.default.port, config_1.default.host, () => {
-    let addr = server.address();
-    if (addr && typeof addr != "string") {
-        const { address, port } = addr;
-        addr = `http://${address}:${port}`;
-    }
-    console.log(`Server listening on ${addr}`);
-});
+// Start the server if ran directly (tests import it and start it manually)
+/* istanbul ignore if */
+if (require.main?.filename === __filename) {
+    const server = app.listen(config_1.default.port, config_1.default.host, () => {
+        let addr = server.address();
+        if (addr && typeof addr != "string") {
+            const { address, port } = addr;
+            addr = `http://${address}:${port}`;
+        }
+        console.log(`Server listening on ${addr}`);
+    });
+}
+module.exports = app;

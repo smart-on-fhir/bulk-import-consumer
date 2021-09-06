@@ -22,13 +22,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getJobIds = exports.getRequestBaseURL = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.truncateUrl = exports.asArray = exports.htmlEncode = exports.AbortError = void 0;
+exports.template = exports.getJobIds = exports.getRequestBaseURL = exports.writeJSON = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.truncateUrl = exports.asArray = exports.htmlEncode = exports.AbortError = void 0;
 const fs_1 = require("fs");
 const promises_1 = require("fs/promises");
+const lockfile_1 = __importDefault(require("lockfile"));
 const util = __importStar(require("util"));
 const CustomError_1 = require("./CustomError");
 const config_1 = __importDefault(require("./config"));
 const posix_1 = require("path/posix");
+const debug = util.debuglog("app");
 class AbortError extends Error {
     constructor(message = "Operation aborted") {
         super(message);
@@ -128,6 +130,7 @@ function wait(ms, signal) {
         }, ms);
         function abort() {
             if (timer) {
+                debug("Canceling wait timeout...");
                 clearTimeout(timer);
             }
             reject(new AbortError("Waiting aborted"));
@@ -164,10 +167,50 @@ exports.deleteFileIfExists = deleteFileIfExists;
 /**
  * Read a file and parse it as JSON.
  */
-async function readJSON(path) {
-    return promises_1.readFile(path).then(json => parseJSON(json));
+async function readJSON(path, retry = 10) {
+    return new Promise((resolve, reject) => {
+        // debug(`Acquiring lock ${path}.lock`)
+        lockfile_1.default.lock(`${path}.lock`, { retries: 10, retryWait: 50 }, e => {
+            if (e) {
+                debug(`Acquiring lock ${path}.lock failed: %s`, e);
+                return reject(e);
+            }
+            return promises_1.readFile(path, "utf8").then(json => {
+                // debug(`Releasing lock ${path}.lock`)
+                lockfile_1.default.unlock(`${path}.lock`, err => {
+                    if (err) {
+                        debug(`Releasing lock ${path}.lock failed: %s`, err);
+                        return reject(err);
+                    }
+                });
+                return parseJSON(json).then(json => resolve(json));
+            });
+        });
+    });
 }
 exports.readJSON = readJSON;
+async function writeJSON(path, data) {
+    return new Promise((resolve, reject) => {
+        // debug(`Acquiring lock ${path}.lock`)
+        lockfile_1.default.lock(`${path}.lock`, { retries: 10, retryWait: 50 }, e => {
+            if (e) {
+                debug(`Acquiring lock ${path}.lock failed: %s`, e);
+                return reject(e);
+            }
+            return promises_1.writeFile(path, JSON.stringify(data, null, 4)).then(json => {
+                // debug(`Releasing lock ${path}.lock`)
+                lockfile_1.default.unlock(`${path}.lock`, err => {
+                    if (err) {
+                        debug(`Releasing lock ${path}.lock failed: %s`, err);
+                        return reject(err);
+                    }
+                    resolve(data);
+                });
+            });
+        });
+    });
+}
+exports.writeJSON = writeJSON;
 /**
  * Parses the given json string into a JSON object. Internally it uses the
  * JSON.parse() method but adds three things to it:
@@ -186,7 +229,7 @@ async function parseJSON(json) {
             }
             catch (error) {
                 console.error(error);
-                console.log(json);
+                console.log('JSON INPUT:', json);
                 return reject(error);
             }
             resolve(out);
@@ -209,3 +252,7 @@ async function getJobIds() {
     }).map(entry => entry.name);
 }
 exports.getJobIds = getJobIds;
+function template(tpl, data) {
+    return tpl.replace(/\{(.+?)\}/g, (match, name) => data[name] || match);
+}
+exports.template = template;

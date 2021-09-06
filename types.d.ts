@@ -51,10 +51,43 @@ export namespace ImportServer {
         host: string
 
         /**
-         * How many characters can be put in (parsed from) single ndjson line
-         * without hitting memory limits
+         * How many utf8 characters can be put in (parsed from) single ndjson
+         * line without hitting memory limits
          */
         ndjsonMaxLineLength: number
+
+        /**
+         * A template string used to compute the name of the downloaded files.
+         * 
+         * Available variables:
+         * - `originalName` - The filename as reported by the data provider
+         * - `resourceType` - The ResourceType of the resources in this file
+         * - `jobId`        - The unique ID of the current import job
+         * - `fileNumber`   - The file number. It would be `1` or bigger if we
+         *                    have multiple files of the same type.
+         * 
+         * Examples:
+         * - `"{originalName}"` - preserve the original name
+         * - `"{fileNumber}.{resourceType}.ndjson"` - enforce the traditional
+         *   naming of bulk data files
+         * 
+         * Defaults to "{originalName}"
+         * 
+         * NOTE: `jobId` can be used when the destination is an S3 bucket to
+         * put the files into jobId subfolder
+         * (for example: `{jobId}/{fileNumber}.{resourceType}.ndjson`). If the
+         * destination is local FS, files will go into jobId subfolder by
+         * default and using jobId in the template does not make sense.
+         */
+        downloadFileName: string
+
+        /**
+         * If not "none", download referenced attachments and put them inline as
+         * base64 (for DocumentReference resources only).
+         * Value can be "none" (default), "all", or an array of mime types which
+         * should be inlined.
+         */
+        inlineAttachments: "all" | "none" | string[]
 
         /**
          * Access tokens lifetime in minutes
@@ -108,22 +141,6 @@ export namespace ImportServer {
          */
         privateKey: JWK
 
-        /**
-         * Data provider's client configuration
-         */
-        exportClient: {
-
-            /**
-             * The base URL of the data provider's FHIR server
-             */
-            serverURL: string
-
-            /**
-             * The token URL of the data provider's auth server
-             */
-            tokenURL: string
-
-        }
 
         destination: {
             /**

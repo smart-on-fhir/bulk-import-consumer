@@ -50,7 +50,7 @@ class JsonModel {
                     this.set(key, props[key]);
                 }
             }
-            await promises_1.default.writeFile(this.path, JSON.stringify(this.toJSON(), null, 4));
+            await lib_1.writeJSON(this.path, this.toJSON());
         }
     }
     delete() {
