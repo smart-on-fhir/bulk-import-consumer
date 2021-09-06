@@ -122,6 +122,7 @@ export function wait(ms: number, signal?: AbortSignal)
 
         function abort() {
             if (timer) {
+                debug("Canceling wait timeout...")
                 clearTimeout(timer);
             }
             reject(new AbortError("Waiting aborted"))
@@ -183,7 +184,7 @@ async function parseJSON<T=JsonValue>(json: any): Promise<T>
             }
             catch (error) {
                 console.error(error)
-                console.log(json)
+                console.log('JSON INPUT:', json)
                 return reject(error);
             }
             resolve(out);

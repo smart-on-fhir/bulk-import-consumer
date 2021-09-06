@@ -289,7 +289,6 @@ export class ImportJob
             // have to also reply once with a progress value of 100%. On the
             // next call we will proceed to the success response.
             if (progress === 100) {
-                job.state.set("status", "Importing completed")
                 await job.state.save({
                     status: "Importing completed",
                     completedAt: Date.now()
@@ -545,6 +544,11 @@ export class ImportJob
                 }
             });
 
+            if (!manifest.output?.length) {
+                this.debug("waitForExport -> manifest: %o", manifest)
+                throw new Error("waitForExport -> no files found in the export manifest")
+            }
+
             await this.state.save({ manifest })
             return this.waitForImport()
         } catch (ex) {
@@ -630,7 +634,6 @@ export class ImportJob
 
 async function cleanUp()
 {
-    debug("Checking for expired jobs...")
     const now = Date.now()
     const ids = await getJobIds()
     const { jobsMaxAbsoluteAge, jobsMaxAge } = config

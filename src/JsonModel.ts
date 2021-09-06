@@ -2,7 +2,7 @@ import crypto               from "crypto"
 import fs                   from "fs/promises"
 import { join }             from "path"
 import { existsSync }       from "fs"
-import { isFile, readJSON } from "./lib"
+import { isFile, readJSON, writeJSON } from "./lib"
 import config               from "./config"
 
 
@@ -68,7 +68,7 @@ export class JsonModel<T=Record<string, any>>
                     this.set(key, props[key])
                 }
             }
-            await fs.writeFile(this.path, JSON.stringify(this.toJSON(), null, 4))
+            await writeJSON(this.path, this.toJSON())
         }
     }
 
