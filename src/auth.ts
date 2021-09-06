@@ -230,7 +230,7 @@ export async function tokenHandler(req: Request, res: Response, next: NextFuncti
             client_assertion_type,
             client_assertion
         }
-    } = req;
+    } = req; // console.log(req.body)
 
     const algorithms: jwt.Algorithm[] = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"];
 
@@ -286,7 +286,7 @@ export async function tokenHandler(req: Request, res: Response, next: NextFuncti
 
     // Validate authenticationToken.aud (must equal this url)
     if (aud.replace(/^https?/, "") !== authenticationToken.aud.replace(/^https?/, "")) {
-        return next(new OAuthError(400, "invalid_request", "Invalid 'aud'"))
+        return next(new OAuthError(400, "invalid_request", "Invalid 'aud'. Expected %s but got %s", aud, authenticationToken.aud))
     }
 
     if (authenticationToken.iss !== authenticationToken.sub) {
