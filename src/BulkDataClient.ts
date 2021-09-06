@@ -1,17 +1,15 @@
 import util                          from "util"
 import jose                          from "node-jose"
-import got                           from "./request"
-import jwt                           from "jsonwebtoken"
+import { Got, Response }             from "got"
 import { Writable }                  from "stream"
 import { Parameters }                from "fhir/r4"
+import got                           from "./request"
 import { AbortError, asArray, wait } from "./lib"
 import { CustomError }               from "./CustomError"
 import { OperationOutcome }          from "./OperationOutcome"
 import { BulkData, ImportServer }    from "../types"
 import { authorize }                 from "./auth"
-import Request                       from "got/dist/source/core"
-import { Got, Response, CancelableRequest } from "got"
-import config from "./config"
+import config                        from "./config"
 
 const debug = util.debuglog("app")
 const debugOutgoingAuth = util.debuglog("app-auth-outgoing")
@@ -74,34 +72,6 @@ export class BulkDataClient
     private abortController: AbortController;
 
     /**
-     * A reference to the cancelable authorization request promise. This will
-     * only be set while the authorization request is pending. Used by the
-     * `cancel` method to abort the authorization request if it is currently
-     * running.
-     */
-    private authRequest: CancelableRequest<Response<BulkData.TokenResponse>> | null = null;
-
-    /**
-     * A reference to the cancelable kick-off request promise. This will only be
-     * set while the kick-off request is pending. Used by the `cancel` method to
-     * abort the kick-off request if it is currently running.
-     */
-     private kickOffRequest: CancelableRequest<Response<any>> | null = null;
-
-    /**
-     * A reference to the cancelable status request promise. This will only be
-     * set while the status request is pending. Used by the `cancel` method to
-     * abort the status request if it is currently running.
-     */
-    private statusRequest: CancelableRequest<Response<any>> | null = null;
-
-    /**
-     * Multiple file download streams may exist. We store references to them
-     * here so that we can destroy them on abort
-     */
-    private downloadStreams: Set<Request> = new Set()
-
-    /**
      * Get a BulkDataClient instance by its ID
      */
     public static getInstance(id: string)
@@ -157,42 +127,11 @@ export class BulkDataClient
         debug("BulkDataClient#%s: " + message, this.id, ...rest)
     }
 
-    public async cancel(reason = "Import canceled")
+    public async cancel()
     {
         this.debug("aborting...")
         this._aborted = true
-
-        // Abort wait timeouts (if any)
-        this.debug("aborting wait timeouts")
         this.abortController.abort()
-
-        // Abort authorization request (if pending)
-        if (this.authRequest) {
-            this.debug("aborting authorization request")
-            this.authRequest.cancel(reason)
-            this.authRequest = null
-        }
-
-        // Abort kick-off request (if pending)
-        if (this.kickOffRequest) {
-            this.debug("aborting kick-off request")
-            this.kickOffRequest.cancel(reason)
-            this.kickOffRequest = null
-        }
-
-        // Abort status request (if pending)
-        if (this.statusRequest) {
-            this.debug("aborting status request")
-            this.statusRequest.cancel(reason)
-            this.statusRequest = null
-        }
-
-        // Abort downloads (if any)
-        this.downloadStreams.forEach(stream => {
-            this.debug("aborting download from %s", stream.options.url.href)
-            this.downloadStreams.delete(stream)
-            stream.destroy()
-        })
     }
 
     /**
@@ -211,19 +150,28 @@ export class BulkDataClient
         debugOutgoingAuth("Authorizing at data provider with options:", options)
 
         const { request } = await authorize(options);
+        
+        const abort = () => {
+            this.debug("aborting authorization request")
+            request.cancel()
+        };
 
-        this.authRequest = request
+        this.abortController.signal.addEventListener("abort", abort, { once: true });
 
-        const { body } = await this.authRequest
-
-        debugOutgoingAuth("Received access token response from data provider:", body)
-        this.debug("Completed authorization request to data provider")
-
-        this.authRequest = null
-
-        return body.access_token || ""
+        return request.then(res => {
+            const { body } = res
+            debugOutgoingAuth("Received access token response from data provider:", body)
+            this.debug("Completed authorization request to data provider")
+            return body.access_token || ""
+        }).finally(() => {
+            this.abortController.signal.removeEventListener("abort", abort);
+        });
     }
 
+    /**
+     * Makes a kick-off export request to the Data Provider's export endpoint.
+     * Used for initiating dynamic imports.
+     */
     async kickOff(kickOffUrl: string, params: BulkData.KickOfParams = {}): Promise<BulkData.KickOffResponse>
     {
         const body: Parameters = {
@@ -297,11 +245,9 @@ export class BulkDataClient
             );
         }
 
-        // this._aborted = false
-
         this.debug("Making export kick-off request")
 
-        this.kickOffRequest = this.request(kickOffUrl, {
+        const request = this.request(kickOffUrl, {
             json: body,
             method: "POST",
             followRedirect: false,
@@ -311,11 +257,19 @@ export class BulkDataClient
             }
         });
 
-        return this.kickOffRequest.then(res => {
+        const abort = () => {
+            this.debug("aborting kick-off request")
+            request.cancel()
+        };
+
+        this.abortController.signal.addEventListener("abort", abort, { once: true });
+
+        return request.then(res => {
             this.debug("Completed export kick-off request")
-            this.kickOffRequest = null
             return res
-        })
+        }).finally(() => {
+            this.abortController.signal.removeEventListener("abort", abort);
+        });
     }
 
     async waitForExport(kickOffResponse: BulkData.KickOffResponse, onProgress?: (pct: number) => any): Promise<BulkData.ExportManifest>
@@ -336,9 +290,7 @@ export class BulkDataClient
             );
         }
 
-        this.statusRequest = this.fetchExportManifest(contentLocation);
-        const { body, statusCode, headers } = await this.statusRequest;
-        this.statusRequest = null
+        const { body, statusCode, headers } = await this.fetchExportManifest(contentLocation);
 
         if (!this._aborted && statusCode !== 200) {
             onProgress && await onProgress(parseFloat(headers["x-progress"] + "" || "0"))
@@ -359,52 +311,84 @@ export class BulkDataClient
      *   export is still in progress this will resolve with 202 responses and
      *   should be called again until status 200 is received
      */
-    fetchExportManifest(location: string): CancelableRequest<Response<BulkData.ExportManifest>>
+    fetchExportManifest(location: string): Promise<Response<BulkData.ExportManifest>>
     {
         if (this._aborted) {
             throw new CustomError(410, "The export has been canceled by the client");
         }
 
-        return this.request<BulkData.ExportManifest>(location, {
+        const request = this.request<BulkData.ExportManifest>(location, {
             responseType: "json",
             headers: {
                 authorization: `Bearer ${ this.accessToken }`
             }
         });
+
+        const abort = () => {
+            this.debug("aborting status request")
+            request.cancel()
+        };
+
+        this.abortController.signal.addEventListener("abort", abort, { once: true });
+
+        return request.finally(() => {
+            this.abortController.signal.removeEventListener("abort", abort);
+        });
     }
 
-    downloadFile(descriptor: BulkData.ExportManifestFile)
+    /**
+     * Creates and returns a file download stream for provided file descriptor.
+     * The download can be aborted by calling `this.cancel()`.
+     * NOTE that the download won't begin until the returned stream is piped
+     * to some destination stream.
+     */
+    downloadFileStream(descriptor: BulkData.ExportManifestFile)
     {
         if (this._aborted) {
             throw new AbortError("The export has been canceled by the client");
         }
 
-        const out = {
-            stream: () => {
-                const stream = this.request.stream(descriptor.url, {
-                    headers: {
-                        authorization: `Bearer ${ this.accessToken }`
-                    }
-                });
-                this.downloadStreams.add(stream)
-                stream.once("close", () => {
-                    this.downloadStreams.delete(stream)
-                });
-                stream.once("readable", () => {
-                    this.debug("Downloading file %s", descriptor.url)
-                });
-                return stream;
-            },
-            promise: (destination: Writable) => {
-                return new Promise((resolve, reject) => {
-                    const source = out.stream();
-                    let pipeline: Writable = source.pipe(destination);
-                    pipeline.once("finish", resolve);
-                    pipeline.once("error", e => reject(new OperationOutcome(e.message, 500)));
-                });
+        const stream = this.request.stream(descriptor.url, {
+            headers: {
+                authorization: `Bearer ${ this.accessToken }`
             }
+        });
+
+        const abort = () => {
+            this.debug("aborting download from %s", descriptor.url)
+            stream.destroy()
         };
 
-        return out
+        this.abortController.signal.addEventListener("abort", abort, { once: true });
+        
+        stream.once("end", () => {
+            this.abortController.signal.removeEventListener("abort", abort);
+        });
+
+        stream.once("readable", () => {
+            this.debug("Downloading file %s", descriptor.url)
+        });
+
+        return stream;
+    }
+
+    /**
+     * This is a wrapper around `this.downloadFileStream()` that returns a
+     * Promise which will be resolved once the download is complete.
+     * A destination writable stream must also be provided. Otherwise the
+     * download won't start and the promise will remain pending.
+     */
+    downloadFilePromise(descriptor: BulkData.ExportManifestFile, destination: Writable)
+    {
+        if (this._aborted) {
+            throw new AbortError("The export has been canceled by the client");
+        }
+
+        return new Promise((resolve, reject) => {
+            const source = this.downloadFileStream(descriptor);
+            let pipeline: Writable = source.pipe(destination);
+            pipeline.once("finish", resolve);
+            pipeline.once("error", e => reject(new OperationOutcome(e.message, 500)));
+        });
     }
 }
