@@ -170,6 +170,45 @@ export namespace ImportServer {
             secretAccessKey: string
         }
     }
+
+    interface ImportJobState {
+        /**
+         * Unique ID of the instance. Used as a file name when persisting the
+         * instance in a file.
+         */
+        id: string;
+    
+        /**
+         * Timestamp of the instance creation time. Used when we clean up old jobs.
+         */
+        createdAt: number;
+    
+        /**
+         * Timestamp of the moment when the import was completed.
+         */
+        completedAt?: number;
+    
+        exportUrl?: string;
+        exportStatusLocation?: string;
+        exportParams?: Record<string, any>;
+        manifest?: BulkData.ExportManifest;
+    
+        exportProgress?: number
+        importProgress?: number
+        status?: string
+    
+        exportType: "dynamic" | "static"
+    
+        outcome: fhir4.OperationOutcome[]
+    
+        // aborted?: boolean
+        bulkDataClientInstanceId?: string
+    
+        // clientId?: string
+        // consumerClientId?: string
+        // providerBaseUrl?: string
+        client: ImportServer.Client
+    }
 }
 
 export namespace BulkData {

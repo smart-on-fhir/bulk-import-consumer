@@ -22,14 +22,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.template = exports.getJobIds = exports.getRequestBaseURL = exports.writeJSON = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.truncateUrl = exports.asArray = exports.htmlEncode = exports.AbortError = void 0;
+exports.template = exports.getRequestBaseURL = exports.writeJSON = exports.readJSON = exports.deleteFileIfExists = exports.isFile = exports.wait = exports.routeHandler = exports.getParameter = exports.assert = exports.truncateUrl = exports.asArray = exports.htmlEncode = exports.AbortError = void 0;
 const fs_1 = require("fs");
 const promises_1 = require("fs/promises");
-const lockfile_1 = __importDefault(require("lockfile"));
 const util = __importStar(require("util"));
-const CustomError_1 = require("./CustomError");
-const config_1 = __importDefault(require("./config"));
+const lockfile_1 = __importDefault(require("lockfile"));
 const posix_1 = require("path/posix");
+const CustomError_1 = require("./CustomError");
 const debug = util.debuglog("app");
 class AbortError extends Error {
     constructor(message = "Operation aborted") {
@@ -245,13 +244,6 @@ function getRequestBaseURL(req) {
     return protocol + "://" + host;
 }
 exports.getRequestBaseURL = getRequestBaseURL;
-async function getJobIds() {
-    const entries = await promises_1.readdir(config_1.default.jobsPath, { withFileTypes: true });
-    return entries.filter(entry => {
-        return entry.isDirectory() && entry.name.match(/^[a-fA-F0-9]+$/);
-    }).map(entry => entry.name);
-}
-exports.getJobIds = getJobIds;
 function template(tpl, data) {
     return tpl.replace(/\{(.+?)\}/g, (match, name) => data[name] || match);
 }

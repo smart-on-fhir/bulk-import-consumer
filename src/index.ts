@@ -1,3 +1,4 @@
+import { resolve }                              from "path"
 import express, { Request, Response }           from "express"
 import cors                                     from "cors"
 import util                                     from "util"
@@ -10,7 +11,7 @@ import generator                                from "./generator"
 import { OAuthError }                           from "./OAuthError"
 import config                                   from "./config"
 import { ImportJob }                            from "./ImportJob"
-import { resolve } from "path"
+import * as JobManager                          from "./jobManager"
 
 const debug = util.debuglog("app")
 
@@ -144,6 +145,8 @@ app.use((error: Error, req: Request, res: Response, next: any) => {
     console.log("Global Error Handler: %o", error)
     res.status(500).end('Internal Server Error')
 })
+
+JobManager.start();
 
 // Start the server if ran directly (tests import it and start it manually)
 /* istanbul ignore if */

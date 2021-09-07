@@ -1,13 +1,12 @@
-import { NextFunction, RequestHandler, Request, Response } from "express";
-import { Parameters, ParametersParameter } from "fhir/r4";
-import { statSync, unlinkSync } from "fs";
-import { readFile, readdir, writeFile } from "fs/promises";
-import lockfile from "lockfile"
-import * as util from "util"
-import { CustomError } from "./CustomError"
-import { ProblemSeverity, JsonValue, JsonObject, JsonPrimitive } from "../types";
-import config from "./config"
-import { basename } from "path/posix";
+import { statSync, unlinkSync }                            from "fs"
+import { readFile, writeFile }                             from "fs/promises"
+import * as util                                           from "util"
+import { NextFunction, RequestHandler, Request, Response } from "express"
+import lockfile                                            from "lockfile"
+import { basename }                                        from "path/posix"
+import { Parameters, ParametersParameter }                 from "fhir/r4"
+import { CustomError }                                     from "./CustomError"
+import { ProblemSeverity, JsonValue }                      from "../types"
 
 const debug = util.debuglog("app")
 
@@ -242,13 +241,6 @@ export function getRequestBaseURL(req: Request) {
     const host = req.headers["x-forwarded-host"] || req.headers.host;
     const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
     return protocol + "://" + host;
-}
-
-export async function getJobIds() {
-    const entries = await readdir(config.jobsPath, { withFileTypes: true });
-    return entries.filter(entry => {
-        return entry.isDirectory() && entry.name.match(/^[a-fA-F0-9]+$/);
-    }).map(entry => entry.name);
 }
 
 export function template(tpl: string, data: {[key: string]: string}) {

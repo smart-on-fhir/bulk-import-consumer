@@ -1,5 +1,6 @@
-import util                                from "util" 
+import util                                from "util"
 import events                              from "events"
+import { Stream }                          from "stream"
 import { NextFunction, Request, Response } from "express"
 import { join, basename }                  from "path"
 import { rm }                              from "fs/promises"
@@ -13,65 +14,24 @@ import { JsonModel }                       from "./JsonModel"
 import config                              from "./config"
 import { authorizeIncomingRequest }        from "./auth"
 import { DevNull }                         from "./DevNull"
+import ParseNDJSON                         from "./ParseNDJSON"
+import StringifyNDJSON                     from "./StringifyNDJSON"
+import ValidateFHIR                        from "./ValidateFHIR"
+import FHIRTransform                       from "./FHIRTransform"
 import {
-    getJobIds,
     getRequestBaseURL,
-    isFile,
-    readJSON,
     assert,
     getParameter,
     AbortError,
     template
 } from "./lib"
-import ParseNDJSON from "./ParseNDJSON"
-import StringifyNDJSON from "./StringifyNDJSON"
-import { Stream } from "stream"
-import ValidateFHIR from "./ValidateFHIR"
-import FHIRTransform from "./FHIRTransform"
 
 events.defaultMaxListeners = 30
 
 const debug = util.debuglog("app")
 
 
-interface ImportJobState {
-    /**
-     * Unique ID of the instance. Used as a file name when persisting the
-     * instance in a file.
-     */
-    id: string;
 
-    /**
-     * Timestamp of the instance creation time. Used when we clean up old jobs.
-     */
-    createdAt: number;
-
-    /**
-     * Timestamp of the moment when the import was completed.
-     */
-    completedAt?: number;
-
-    exportUrl?: string;
-    exportStatusLocation?: string;
-    exportParams?: Record<string, any>;
-    manifest?: BulkData.ExportManifest;
-
-    exportProgress?: number
-    importProgress?: number
-    status?: string
-
-    exportType: "dynamic" | "static"
-
-    outcome: OperationOutcome[]
-
-    // aborted?: boolean
-    bulkDataClientInstanceId?: string
-
-    // clientId?: string
-    // consumerClientId?: string
-    // providerBaseUrl?: string
-    client: ImportServer.Client
-}
 
 export function validateKickOffHeaders(req: Request) {
     const {
@@ -188,26 +148,34 @@ export function getImportPingParameters(body: Parameters)
 export class ImportJob
 {
     /**
-     * The instance state which should be persisted on the instance. Can be null
-     * after the job is canceled and the corresponding state is deleted from the
-     * file system
+     * The instance state which should be persisted on the file system. Can also
+     * be `null` after the job is canceled and the corresponding state is
+     * deleted from the file system.
      */
-    private state: JsonModel<ImportJobState> | null;
+    private state: JsonModel<ImportServer.ImportJobState> | null;
 
+    /**
+     * A BulkDataClient instance used to query the Data Provider's Bulk Data
+     * server. Note that each ImportJob instance can have exactly one
+     * BulkDataClient instance and the `getBulkDataClient` method will ensure
+     * that.
+     */
     private bulkDataClient: BulkDataClient;
 
+    /**
+     * Used internally to store a reference to the task promise that should
+     * eventually be resolved with the BulkDataClient instance.
+     */
     private bulkDataClientPromise: Promise<BulkDataClient>;
 
     /**
-     * An AbortController instance that we use to pass abort signals to cancel
-     * any pending wait timeouts
+     * Start an import
+     * - Validates input headers and parameters body
+     * - Creates new ImportJob
+     * - Starts static or dynamic import depending on the parameters
+     * - Replies with 202 and content-location header
+     * @route POST /$import
      */
-    private abortController: AbortController;
-
-    // private client: ImportServer.Client;
-
-    // Begin Route Handlers ----------------------------------------------------
-
     static async kickOff(req: Request, res: Response, next: NextFunction) {
 
         const client = await authorizeIncomingRequest(req)
@@ -256,6 +224,11 @@ export class ImportJob
         return res.end()
     }
     
+    /**
+     * Get job outcomes as NDJSON
+     * @throws {CustomError} 404 if job is not found
+     * @route GET /job/:id/import-outcome.ndjson
+     */
     static async importOutcome(req: Request, res: Response) {
         const job = await ImportJob.byId(req.params.id);
         const outcomes = job.state.get("outcome")
@@ -266,6 +239,15 @@ export class ImportJob
         res.end()
     }
     
+    /**
+     * Check the status of import job
+     * - If there is no such job throws 404 error
+     * - If the job is in progress replies with 202 and progress info headers
+     * - If the job is complete replies with 200 and import manifest JSON
+     * - Replies with json OperationOutcome in case of error
+     * @throws {CustomError} 404 if job is not found
+     * @route GET /job/:id
+     */
     static async status(req: Request, res: Response) {
         const job = await ImportJob.byId(req.params.id);
         const exportType     = job.state.get("exportType")
@@ -278,10 +260,7 @@ export class ImportJob
             progress = (exportProgress + importProgress) / 2
         }
 
-        res.set({
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache"
-        });
+        res.set({ "Cache-Control": "no-store", "Pragma": "no-cache" });
         
         // Response - In-Progress Status ---------------------------------------
         // HTTP Status Code of 202 Accepted
@@ -384,6 +363,12 @@ export class ImportJob
         res.json(result);
     }
     
+    /**
+     * Cancel and destroy an import job. If the job does not exist (because it
+     * never has, or because it has been canceled already) throws a 404 error.
+     * @throws {CustomError} 404 if job is not found
+     * @route DELETE /job/:id
+     */
     static async cancel(req: Request, res: Response) {
         const job = await ImportJob.byId(req.params.id);
         job.debug("Deleting job")
@@ -394,45 +379,59 @@ export class ImportJob
             "information"
         ));
     }
-        
-    // End Route Handlers ------------------------------------------------------
     
-    public static async byId(id: string)
+    /**
+     * Find an ImportJob by ID.
+     * @throws {CustomError} 404 if job is not found
+     */
+    public static async byId(id: string): Promise<ImportJob>
     {
-        const model = await JsonModel.byId<ImportJobState>(id)
+        const model = await JsonModel.byId<ImportServer.ImportJobState>(id)
         if (model) {
             return new ImportJob(model)
         }
         throw new CustomError(404, `Cannot find import job with id "${id}"`)
     }
     
-    public static async create(state?: ImportJobState)
+    /**
+     * Create new ImportJob
+     * @param state Initial state
+     */
+    public static async create(state?: ImportServer.ImportJobState): Promise<ImportJob>
     {
-        const model = await JsonModel.create(state)
-        model.set("createdAt", Date.now())
-        model.set("exportProgress", 0)
-        model.set("importProgress", 0)
-        model.set("outcome", [])
-        await model.save()
+        const model = await JsonModel.create({
+            ...state,
+            createdAt: Date.now(),
+            exportProgress: 0,
+            importProgress: 0,
+            outcome: []
+        });
         return new ImportJob(model)
     }
     
-    private constructor(state: JsonModel<ImportJobState>)
+    /**
+     * Note that the constructor is private and is only used internally.
+     * Static methods like `create` and `byId` should be used to get an instance.
+     * @param state The associated state model
+     */
+    private constructor(state: JsonModel<ImportServer.ImportJobState>)
     {
         this.state = state
-        this.abortController = new AbortController()
+        // this.abortController = new AbortController()
     }
     
-    public toJSON()
-    {
-        return this.state
-    }
-    
-    public async cancel()
+    /**
+     * Cancel this job.
+     * - If we have a bulk data client and it is currently requesting something,
+     *   abort that request
+     * - Remove the persisted job state and downloaded files (if any)
+     * - Set `this.state` to `null`
+     */
+    public async cancel(): Promise<void>
     {
         // this.state.set("aborted", true)
         // await this.state.save()
-        this.abortController.abort()
+        // this.abortController.abort()
 
         const client = await this.getBulkDataClient()
 
@@ -449,12 +448,21 @@ export class ImportJob
         this.state = null
     }
     
-    // private methods ---------------------------------------------------------
-
+    /**
+     * A debug method bound to this instance so that it will always prefix
+     * messages with the class name and the instance ID.
+     */
     private debug(message: string, ...rest: any[]) {
         debug("ImportJob#%s: " + message, this.state?.id, ...rest)
     }
 
+    /**
+     * Get the BulkDataClient instance we use to delegate all data provider
+     * requests. Note that that instance has unique ID, so that we can "revive"
+     * it. For example, if we are in the status endpoint, a BulkDataClient
+     * should should have been created already during the kick-off and we need
+     * to find it and return it instead of creating new one.
+     */
     private async getBulkDataClient(): Promise<BulkDataClient>
     {
         // In case we already have an instance
@@ -541,6 +549,10 @@ export class ImportJob
         }
     }
 
+    /**
+     * Waits for the data provider to export all files. Then automatically calls
+     * `this.waitForImport()` to download them.
+     */
     private async waitForExport(kickOffResponse: BulkData.KickOffResponse): Promise<ImportJob> {
         this.debug("waitForExport")
         try {
@@ -566,6 +578,9 @@ export class ImportJob
         }
     }
 
+    /**
+     * Downloads all files from the data provider
+     */
     private async waitForImport(): Promise<ImportJob> {
         this.debug("waitForImport")
         await this.getBulkDataClient()
@@ -580,17 +595,7 @@ export class ImportJob
         const outcomes = this.state.get("outcome") as OperationOutcome[]
         const files    = manifest?.output || []
         const len      = files.length;
-        const now      = new Date()
-        const folder   = [
-            now.getUTCFullYear(),
-            now.getUTCMonth(),
-            now.getUTCDate()
-        ].join("-") + "T" + [
-            now.getUTCHours(),
-            now.getUTCMinutes(),
-            now.getUTCSeconds()
-        ].join(":") + "Z";
-
+        
         let done = 0
 
         const counters: { [key: string]: number } = {}
@@ -605,25 +610,6 @@ export class ImportJob
             try {
                 counters[file.type] = counters[file.type] ? counters[file.type] + 1 : 1;
                 await this.downloadFile(file, counters)
-                // if (config.destination.type == "dev-null") {
-                //     await this.bulkDataClient.downloadFilePromise(file, new DevNull())
-                // }
-                // else if (config.destination.type == "tmp-fs") {
-                //     await this.bulkDataClient.downloadFilePromise(file, createWriteStream(join(config.jobsPath, this.state.id, basename(file.url))))
-                // }
-                // else if (config.destination.type == "s3") {
-                //     const aws = (await import("./aws")).default
-                //     const stream = this.bulkDataClient.downloadFileStream(file);
-                //     const upload = new aws.S3.ManagedUpload({
-                //         params: {
-                //             Bucket: String(config.destination.options.bucketName),
-                //             Key: folder + "/" + basename(file.url),
-                //             Body: stream,
-                //             ContentType: "application/ndjson"
-                //         }
-                //     });
-                //     await upload.promise()
-                // }
                 outcomes.push(new OperationOutcome(`File from ${file.url} imported successfully`, 200, "information"))
             } catch (ex) {
                 if (ex instanceof AbortError) {
@@ -643,7 +629,25 @@ export class ImportJob
         return this
     }
 
-    downloadFile(file: BulkData.ExportManifestFile, counters: any) {
+    /**
+     * Downloads single file, passing it through our validation and
+     * transformation pipeline.
+     * 1. Files are downloaded as streams
+     * 2. Empty ndjson lines are skipped
+     * 3. Each line is parsed as JSON (to verify that is is valid JSON)
+     * 4. Each line object must have a "resourceType" property (verifies FHIR)
+     * 5. If the resources are of type "DocumentReference":
+     *    - Attachments referenced by URL are downloaded and put inline
+     *    - PDF attachments are converted to text and then to base64
+     * 6. Line objects are converted back to JSON strings
+     * 7. The pipeline finishes depending on config:
+     *    - If config.destination.type is "dev-null" data is discarded
+     *    - If config.destination.type is "tmp-fs" data is saved to FS
+     *    - If config.destination.type is "s3" data is uploaded to S3 bucket
+     * @param file The file descriptor
+     * @param counters An object with resourceType as keys and number as values
+     */
+    private downloadFile(file: BulkData.ExportManifestFile, counters: any): Promise<void> {
 
         return new Promise((resolve, reject) => {
 
@@ -673,17 +677,27 @@ export class ImportJob
                 return;
             }
 
+            // const date = new Date(this.state.get("createdAt"))
             const filename = template(config.downloadFileName, {
                 jobId       : this.state.id,
                 fileNumber  : counters[file.type],
                 resourceType: file.type,
-                originalName: basename(file.url)
+                originalName: basename(file.url),
+                // exportedAt  : [
+                //     date.getUTCFullYear(),
+                //     date.getUTCMonth(),
+                //     date.getUTCDate()
+                // ].join("-") + "T" + [
+                //     date.getUTCHours(),
+                //     date.getUTCMinutes(),
+                //     date.getUTCSeconds()
+                // ].join(":") + "Z"
             });
 
             // Save to local FS (temporary)
             if (config.destination.type == "tmp-fs") {
                 this.debug(`Writing data from ${file.url} to ${filename}`)
-                const writeStream = createWriteStream(join(config.jobsPath, filename));
+                const writeStream = createWriteStream(join(config.jobsPath, this.state.id, filename));
                 writeStream.once("error", e => errors.push("Error writing file: " + e.stack));
                 pipeline = pipeline.pipe(writeStream)
                 pipeline.once("finish", resolve);
@@ -704,7 +718,7 @@ export class ImportJob
                         }
                     });
                     return upload.promise()
-                }).then(resolve);
+                }).then(() => resolve());
             }
 
             else {
@@ -713,33 +727,3 @@ export class ImportJob
         })
     }
 }
-
-// -----------------------------------------------------------------------------
-
-async function cleanUp()
-{
-    const now = Date.now()
-    const ids = await getJobIds()
-    const { jobsMaxAbsoluteAge, jobsMaxAge } = config
-    for (const id of ids) {
-        const filePath = join(config.jobsPath, id, "state.json")
-        if (isFile(filePath)) {
-            const { completedAt, createdAt } = await readJSON<ImportJobState>(filePath)
-
-            if (completedAt) {
-                if (now - completedAt > jobsMaxAge * 60000) {
-                    debug("Deleting state for expired job #%s", id)
-                    await rm(join(config.jobsPath, id), { recursive: true })
-                }
-            }
-            else if (now - createdAt > jobsMaxAbsoluteAge * 60000) {
-                debug("Deleting state for zombie job #%s", id)
-                await rm(join(config.jobsPath, id), { recursive: true })
-            }
-        }
-    }
-    setTimeout(cleanUp, 60000).unref();
-}
-
-cleanUp()
-
