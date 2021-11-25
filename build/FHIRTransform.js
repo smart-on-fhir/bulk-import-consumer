@@ -23,9 +23,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const stream_1 = require("stream");
-const pdfJsLib = __importStar(require("pdfjs-dist"));
+const pdfJsLib = __importStar(require("pdfjs-dist/legacy/build/pdf"));
 const config_1 = __importDefault(require("./config"));
-const request_1 = __importDefault(require("./request"));
 class PDF {
     static async getPageText(pdf, pageNo) {
         const page = await pdf.getPage(pageNo);
@@ -43,22 +42,22 @@ class PDF {
         return pageTexts.join(' ');
     }
 }
-async function downloadAttachment(url) {
+async function downloadAttachment(url, client) {
     if (url.search(/^https?:\/\/.+/) === 0) {
-        return downloadAttachmentFromAbsoluteUrl(url);
+        return downloadAttachmentFromAbsoluteUrl(url, client);
     }
-    return downloadAttachmentFromRelativeUrl(url);
+    return downloadAttachmentFromRelativeUrl(url, client);
 }
-async function downloadAttachmentFromAbsoluteUrl(url) {
+async function downloadAttachmentFromAbsoluteUrl(url, client) {
     console.log(`Downloading attachment from ${url}`);
-    return await request_1.default(url, {
+    return await client.request(url, {
         responseType: "buffer",
         resolveBodyOnly: true
     });
 }
-async function downloadAttachmentFromRelativeUrl(url) {
+async function downloadAttachmentFromRelativeUrl(url, client) {
     console.log(`Downloading attachment from ${url}`);
-    return await request_1.default(url, {
+    return await client.request(url, {
         responseType: "buffer",
         resolveBodyOnly: true
     });
@@ -76,13 +75,13 @@ async function pdfToText(data) {
     const text = await PDF.getPDFText({ data });
     return Buffer.from(text);
 }
-async function handleAttachmentReference(res) {
+async function handleAttachmentReference(res, client) {
     for (const entry of res.content || []) {
         const attachment = entry.attachment;
         if (!attachment.url) {
             continue;
         }
-        const data = await downloadAttachment(attachment.url);
+        const data = await downloadAttachment(attachment.url, client);
         await inlineAttachmentData(attachment, data);
     }
     return res;
@@ -91,17 +90,18 @@ async function handleAttachmentReference(res) {
  * Consumes FHIR resources and applies custom transformations to them.
  */
 class FHIRTransform extends stream_1.Transform {
-    constructor() {
+    constructor({ client }) {
         super({
             readableObjectMode: true,
             writableObjectMode: true
         });
         this._resourceNumber = 1;
+        this.client = client;
     }
     _transform(resource, encoding, next) {
         // Special handling is needed for DocumentReference resources
         if (resource.resourceType === "DocumentReference" && config_1.default.inlineAttachments) {
-            return handleAttachmentReference(resource)
+            return handleAttachmentReference(resource, this.client)
                 .then(res => {
                 this.push(res);
                 this._resourceNumber++;

@@ -1,15 +1,15 @@
-import util                          from "util"
-import jose                          from "node-jose"
-import { Got, Response }             from "got"
-import { Writable }                  from "stream"
-import { Parameters }                from "fhir/r4"
-import got                           from "./request"
-import { AbortError, asArray, wait } from "./lib"
-import { CustomError }               from "./CustomError"
-import { OperationOutcome }          from "./OperationOutcome"
-import { BulkData, ImportServer }    from "../types"
-import { authorize }                 from "./auth"
-import config                        from "./config"
+import util                                    from "util"
+import jose                                    from "node-jose"
+import { Got, Response }                       from "got"
+import { Writable }                            from "stream"
+import { Parameters }                          from "fhir/r4"
+import got                                     from "./request"
+import { AbortError, asArray, wait }           from "./lib"
+import { CustomError }                         from "./CustomError"
+import { OperationOutcome }                    from "./OperationOutcome"
+import { BulkData, ImportServer }              from "../types"
+import { authorize, getAccessTokenExpiration } from "./auth"
+import config                                  from "./config"
 
 const debug = util.debuglog("app")
 const debugOutgoingAuth = util.debuglog("app-auth-outgoing")
@@ -61,7 +61,13 @@ export class BulkDataClient
 
     private accessToken: string = "";
 
-    private request: Got;
+    /**
+     * Every time we get new access token, we set this field based on the
+     * token's expiration time.
+     */
+    private accessTokenExpiresAt: number = 0;
+
+    public request: Got;
 
     private _aborted: boolean = false;
 
@@ -139,6 +145,10 @@ export class BulkDataClient
      */
     async getAccessToken(): Promise<string>
     {
+        if (this.accessToken && this.accessTokenExpiresAt - 10 > Date.now() / 1000) {
+            return this.accessToken;
+        }
+
         const options = {
             clientId           : this.options.clientId,
             privateKey         : this.options.privateKey,
@@ -162,7 +172,9 @@ export class BulkDataClient
             const { body } = res
             debugOutgoingAuth("Received access token response from data provider:", body)
             this.debug("Completed authorization request to data provider")
-            return body.access_token || ""
+            this.accessToken = res.body.access_token || ""
+            this.accessTokenExpiresAt = getAccessTokenExpiration(res.body)
+            return this.accessToken
         }).finally(() => {
             this.abortController.signal.removeEventListener("abort", abort);
         });

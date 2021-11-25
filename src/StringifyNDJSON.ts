@@ -12,7 +12,7 @@ export default class StringifyNDJSON extends Transform
     constructor()
     {
         super({
-            readableObjectMode: true,
+            readableObjectMode: false,
             writableObjectMode: true
         });
     }

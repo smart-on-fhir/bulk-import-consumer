@@ -66,9 +66,9 @@ export default class ParseNDJSON extends Transform
 
         // The chunk might span over multiple lines
         while (eolPos > -1) {
-            const jsonString  = this._stringBuffer.substring(0, eolPos);
+            const jsonString   = this._stringBuffer.substring(0, eolPos);
             this._stringBuffer = this._stringBuffer.substring(eolPos + 1);
-            this.bufferSize   = this._stringBuffer.length;
+            this.bufferSize    = this._stringBuffer.length;
             this._line += 1;
             
             // If this is not an empty line!

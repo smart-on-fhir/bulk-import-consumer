@@ -17,6 +17,11 @@ const debugOutgoingAuth = util_1.default.debuglog("app-auth-outgoing");
 class BulkDataClient {
     constructor(options) {
         this.accessToken = "";
+        /**
+         * Every time we get new access token, we set this field based on the
+         * token's expiration time.
+         */
+        this.accessTokenExpiresAt = 0;
         this._aborted = false;
         this.id = node_jose_1.default.util.randomBytes(8).toString("hex");
         this.abortController = new AbortController();
@@ -69,6 +74,9 @@ class BulkDataClient {
      * Gets an access token from the Data Provider
      */
     async getAccessToken() {
+        if (this.accessToken && this.accessTokenExpiresAt - 10 > Date.now() / 1000) {
+            return this.accessToken;
+        }
         const options = {
             clientId: this.options.clientId,
             privateKey: this.options.privateKey,
@@ -87,7 +95,9 @@ class BulkDataClient {
             const { body } = res;
             debugOutgoingAuth("Received access token response from data provider:", body);
             this.debug("Completed authorization request to data provider");
-            return body.access_token || "";
+            this.accessToken = res.body.access_token || "";
+            this.accessTokenExpiresAt = auth_1.getAccessTokenExpiration(res.body);
+            return this.accessToken;
         }).finally(() => {
             this.abortController.signal.removeEventListener("abort", abort);
         });

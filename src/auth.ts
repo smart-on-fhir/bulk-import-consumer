@@ -440,3 +440,24 @@ export async function authorize(options: {
         })
     };
 }
+
+export function getAccessTokenExpiration(tokenResponse: any): number
+{
+    const now = Math.floor(Date.now() / 1000);
+
+    // Option 1 - using the expires_in property of the token response
+    if (tokenResponse.expires_in) {
+        return now + tokenResponse.expires_in;
+    }
+
+    // Option 2 - using the exp property of JWT tokens (must not assume JWT!)
+    if (tokenResponse.access_token) {
+        let tokenBody = jwt.decode(tokenResponse.access_token);
+        if (tokenBody && typeof tokenBody == "object" && tokenBody.exp) {
+            return tokenBody.exp;
+        }
+    }
+
+    // Option 3 - if none of the above worked set this to 5 minutes after now
+    return now + 300;
+}

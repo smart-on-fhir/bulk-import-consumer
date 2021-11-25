@@ -28,6 +28,7 @@ const events_1 = __importDefault(require("events"));
 const path_1 = require("path");
 const promises_1 = require("fs/promises");
 const fs_1 = require("fs");
+const stream_1 = require("stream");
 const CustomError_1 = require("./CustomError");
 const OperationOutcome_1 = require("./OperationOutcome");
 const BulkDataClient_1 = require("./BulkDataClient");
@@ -554,69 +555,65 @@ class ImportJob {
      * @param counters An object with resourceType as keys and number as values
      */
     downloadFile(file, counters) {
-        return new Promise((resolve, reject) => {
-            const errors = [];
-            const downloadStream = this.bulkDataClient.downloadFileStream(file);
-            downloadStream.once("error", e => errors.push("Error downloading file: " + e.stack));
-            // Parse and validate NDJSON
-            let pipeline = downloadStream.pipe(new ParseNDJSON_1.default());
-            // Validate FHIR NDJSON
-            pipeline = pipeline.pipe(new ValidateFHIR_1.default());
-            // Apply any custom FHIR resource transformations
-            pipeline = pipeline.pipe(new FHIRTransform_1.default());
-            // Convert back to NDJSON string
-            pipeline = pipeline.pipe(new StringifyNDJSON_1.default());
-            // Discard the file (do not store it anywhere)
-            if (config_1.default.destination.type == "dev-null") {
-                pipeline = pipeline.pipe(new DevNull_1.DevNull());
-                pipeline.once("finish", resolve);
-                pipeline.once("error", e => reject(new OperationOutcome_1.OperationOutcome(e.message + ": " + errors.join(";"), 500)));
-                return;
-            }
-            // const date = new Date(this.state.get("createdAt"))
-            const filename = lib_1.template(config_1.default.downloadFileName, {
-                jobId: this.state.id,
-                fileNumber: counters[file.type],
-                resourceType: file.type,
-                originalName: path_1.basename(file.url),
-                // exportedAt  : [
-                //     date.getUTCFullYear(),
-                //     date.getUTCMonth(),
-                //     date.getUTCDate()
-                // ].join("-") + "T" + [
-                //     date.getUTCHours(),
-                //     date.getUTCMinutes(),
-                //     date.getUTCSeconds()
-                // ].join(":") + "Z"
+        return this.bulkDataClient.getAccessToken().then(accessToken => {
+            return new Promise((resolve, reject) => {
+                const errors = [];
+                const downloadStream = this.bulkDataClient.downloadFileStream(file);
+                downloadStream.once("error", e => errors.push("Error downloading file: " + e.stack));
+                let pipeline = downloadStream
+                    .pipe(new ParseNDJSON_1.default()) // Parse and validate NDJSON
+                    .pipe(new ValidateFHIR_1.default()) // Validate FHIR NDJSON
+                    .pipe(new FHIRTransform_1.default({ client: this.bulkDataClient })) // Apply any custom FHIR resource transformations
+                    .pipe(new StringifyNDJSON_1.default()); // Convert back to NDJSON string
+                downloadStream.once("error", e => reject(new OperationOutcome_1.OperationOutcome(e.message + ": " + errors.join(";"), 500)));
+                // Discard the file (do not store it anywhere) ---------------------
+                if (config_1.default.destination.type == "dev-null") {
+                    pipeline = pipeline.pipe(new DevNull_1.DevNull());
+                    return stream_1.finished(pipeline, (err) => err ? reject(err) : resolve(void 0));
+                }
+                // const date = new Date(this.state.get("createdAt"))
+                const filename = lib_1.template(config_1.default.downloadFileName, {
+                    jobId: this.state.id,
+                    fileNumber: counters[file.type],
+                    resourceType: file.type,
+                    originalName: path_1.basename(file.url),
+                    // exportedAt  : [
+                    //     date.getUTCFullYear(),
+                    //     date.getUTCMonth(),
+                    //     date.getUTCDate()
+                    // ].join("-") + "T" + [
+                    //     date.getUTCHours(),
+                    //     date.getUTCMinutes(),
+                    //     date.getUTCSeconds()
+                    // ].join(":") + "Z"
+                });
+                // Save to local FS (temporary) ------------------------------------
+                if (config_1.default.destination.type == "tmp-fs") {
+                    this.debug(`Writing data from ${file.url} to ${filename}`);
+                    const writeStream = fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, this.state.id, filename));
+                    writeStream.once("error", e => errors.push("Error writing file: " + e.stack));
+                    pipeline = pipeline.pipe(writeStream);
+                    return stream_1.finished(pipeline, { readable: false }, (err) => err ? reject(err) : resolve(void 0));
+                }
+                // Save to S3 bucket -----------------------------------------------
+                if (config_1.default.destination.type == "s3") {
+                    Promise.resolve().then(() => __importStar(require("./aws"))).then(aws => {
+                        this.debug(`Uploading data from ${file.url} to S3: ${config_1.default.destination.options.bucketName}/${filename}`);
+                        const upload = new aws.default.S3.ManagedUpload({
+                            params: {
+                                Bucket: String(config_1.default.destination.options.bucketName),
+                                Key: filename,
+                                Body: pipeline,
+                                ContentType: "application/ndjson"
+                            }
+                        });
+                        return upload.promise();
+                    }).then(() => resolve(void 0));
+                }
+                else {
+                    reject(new Error(`Unknown config.destination.type "${config_1.default.destination.type}"`));
+                }
             });
-            // Save to local FS (temporary)
-            if (config_1.default.destination.type == "tmp-fs") {
-                this.debug(`Writing data from ${file.url} to ${filename}`);
-                const writeStream = fs_1.createWriteStream(path_1.join(config_1.default.jobsPath, this.state.id, filename));
-                writeStream.once("error", e => errors.push("Error writing file: " + e.stack));
-                pipeline = pipeline.pipe(writeStream);
-                pipeline.once("finish", resolve);
-                pipeline.once("error", e => reject(new OperationOutcome_1.OperationOutcome(e.message + ": " + errors.join(";"), 500)));
-            }
-            // Save to S3 bucket
-            else if (config_1.default.destination.type == "s3") {
-                Promise.resolve().then(() => __importStar(require("./aws"))).then(aws => {
-                    this.debug(`Uploading data from ${file.url} to S3: ${config_1.default.destination.options.bucketName}/${filename}`);
-                    const stream = this.bulkDataClient.downloadFileStream(file);
-                    const upload = new aws.default.S3.ManagedUpload({
-                        params: {
-                            Bucket: String(config_1.default.destination.options.bucketName),
-                            Key: filename,
-                            Body: stream,
-                            ContentType: "application/ndjson"
-                        }
-                    });
-                    return upload.promise();
-                }).then(() => resolve());
-            }
-            else {
-                reject(new Error(`Unknown config.destination.type "${config_1.default.destination.type}"`));
-            }
         });
     }
 }

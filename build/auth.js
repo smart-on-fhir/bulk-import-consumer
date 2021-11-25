@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.authorize = exports.getTokenEndpointFromBaseUrl = exports.getTokenEndpointFromCapabilityStatement = exports.getTokenEndpointFromWellKnownSmartConfig = exports.getCapabilityStatement = exports.getWellKnownSmartConfig = exports.tokenHandler = exports.registrationHandler = exports.authorizeOutgoingRequest = exports.authorizeIncomingRequest = exports.getRequestToken = void 0;
+exports.getAccessTokenExpiration = exports.authorize = exports.getTokenEndpointFromBaseUrl = exports.getTokenEndpointFromCapabilityStatement = exports.getTokenEndpointFromWellKnownSmartConfig = exports.getCapabilityStatement = exports.getWellKnownSmartConfig = exports.tokenHandler = exports.registrationHandler = exports.authorizeOutgoingRequest = exports.authorizeIncomingRequest = exports.getRequestToken = void 0;
 const util_1 = __importDefault(require("util"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const node_jose_1 = __importDefault(require("node-jose"));
@@ -338,3 +338,20 @@ async function authorize(options) {
     };
 }
 exports.authorize = authorize;
+function getAccessTokenExpiration(tokenResponse) {
+    const now = Math.floor(Date.now() / 1000);
+    // Option 1 - using the expires_in property of the token response
+    if (tokenResponse.expires_in) {
+        return now + tokenResponse.expires_in;
+    }
+    // Option 2 - using the exp property of JWT tokens (must not assume JWT!)
+    if (tokenResponse.access_token) {
+        let tokenBody = jsonwebtoken_1.default.decode(tokenResponse.access_token);
+        if (tokenBody && typeof tokenBody == "object" && tokenBody.exp) {
+            return tokenBody.exp;
+        }
+    }
+    // Option 3 - if none of the above worked set this to 5 minutes after now
+    return now + 300;
+}
+exports.getAccessTokenExpiration = getAccessTokenExpiration;

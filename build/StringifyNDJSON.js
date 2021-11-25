@@ -8,7 +8,7 @@ const stream_1 = require("stream");
 class StringifyNDJSON extends stream_1.Transform {
     constructor() {
         super({
-            readableObjectMode: true,
+            readableObjectMode: false,
             writableObjectMode: true
         });
         this._lineNumber = 1;
