@@ -24,18 +24,20 @@ async function cleanUp() {
     for (const id of ids) {
         const filePath = join(config.jobsPath, id, "state.json")
         if (isFile(filePath)) {
-            const { completedAt, createdAt } = await readJSON<ImportServer.ImportJobState>(filePath)
+            try {
+                const { completedAt, createdAt } = await readJSON<ImportServer.ImportJobState>(filePath)
 
-            if (completedAt) {
-                if (now - completedAt > jobsMaxAge * 60000) {
-                    debug("Deleting state for expired job #%s", id)
+                if (completedAt) {
+                    if (now - completedAt > jobsMaxAge * 60000) {
+                        debug("Deleting state for expired job #%s", id)
+                        await rm(join(config.jobsPath, id), { recursive: true })
+                    }
+                }
+                else if (now - createdAt > jobsMaxAbsoluteAge * 60000) {
+                    debug("Deleting state for zombie job #%s", id)
                     await rm(join(config.jobsPath, id), { recursive: true })
                 }
-            }
-            else if (now - createdAt > jobsMaxAbsoluteAge * 60000) {
-                debug("Deleting state for zombie job #%s", id)
-                await rm(join(config.jobsPath, id), { recursive: true })
-            }
+            } catch { /* ignore race conditions */ }
         }
     }
     setTimeout(cleanUp, 60000).unref();
