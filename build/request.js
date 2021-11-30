@@ -17,43 +17,50 @@ exports.default = source_1.default.extend({
     hooks: {
         beforeRequest: [
             options => {
-                debug(`-------------------------------------------------------`);
-                debug(`Request: ${options.method} ${options.url}`);
-                debug(`Headers:`, options.headers);
-                const payload = options.body || options.form || options.json;
-                if (payload) {
-                    debug("Payload:", payload);
+                options.headers["user-agent"] = "Bulk Data Import Consumer <https://github.com/smart-on-fhir/bulk-import-consumer>";
+                if (options.isStream) {
+                    const payload = options.body || options.form || options.json;
+                    debug("\n╭────────────────────────────────────────────────────────────────╌┄┈" +
+                        "\nRequest: %s %s\nRequest Headers: %o\n\nRequest Payload: %o" +
+                        "\nResponse: STREAMING..." +
+                        "\n╰────────────────────────────────────────────────────────────────╌┄┈", options.method, options.url, options.headers, payload);
+                    // debug(`Response: streaming...`)
                 }
             }
         ],
         afterResponse: [
-            async (response, retryWithMergedOptions) => {
-                debug(`Response status:`, response.statusCode, response.statusMessage);
-                debug(`Response Headers:`, response.headers);
-                if (response.body) {
-                    debug(`Response:`, response.body);
-                }
-                debug(`-------------------------------------------------------`);
-                // Unauthorized
-                if (response.statusCode === 401 &&
-                    !response.request.options.context.retried &&
-                    typeof response.request.options.context.authorize == "function") {
-                    // Refresh the access token
-                    const token = await response.request.options.context.authorize();
-                    const updatedOptions = {
-                        headers: {
-                            authorization: `bearer ${token}`
-                        },
-                        context: {
-                            retried: true
+            (response, retryWithMergedOptions) => {
+                const { options } = response.request;
+                const payload = options.body || options.form || options.json;
+                debug("\n╭────────────────────────────────────────────────────────────────╌┄┈" +
+                    "\nRequest: %s %s\nRequest Headers: %o\n\nRequest Payload: %o" +
+                    "\nResponse Status: %s %s\nResponse Headers: %o\n\nResponse Payload: %o" +
+                    "\n╰────────────────────────────────────────────────────────────────╌┄┈", options.method, options.url, options.headers, payload, response.statusCode, response.statusMessage, response.headers, response.body);
+                // Handle transient errors by automatically retrying up to 3 times.
+                if (response.body && typeof response.body == "object") {
+                    // @ts-ignore OperationOutcome errors
+                    if (response.body.resourceType === "OperationOutcome") {
+                        const oo = response.body;
+                        if (oo.issue.every(i => i.code === 'transient')) {
+                            let msg = oo.issue.map(i => i.details?.text || i.diagnostics).filter(Boolean);
+                            console.log("The server replied with transient error(s)");
+                            if (msg) {
+                                console.log("- " + msg.join("\n- "));
+                            }
+                            return retryWithMergedOptions(options);
                         }
-                    };
-                    // Update the defaults
-                    source_1.default.mergeOptions(response.request.options, updatedOptions);
-                    // Make a new retry
-                    return retryWithMergedOptions(updatedOptions);
+                    }
                 }
                 return response;
+            }
+        ],
+        beforeRetry: [
+            (error, retryCount) => {
+                if (+retryCount > 3) {
+                    throw new Error(`Request failed in ${retryCount} attempts. ${error}`);
+                }
+                // console.log(`Retrying [${retryCount}]: ${error.code}`);
+                // Retrying [1]: ERR_NON_2XX_3XX_RESPONSE
             }
         ],
         beforeError: [
