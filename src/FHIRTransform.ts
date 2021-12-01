@@ -35,7 +35,10 @@ async function downloadAttachmentFromAbsoluteUrl(url: string, client: BulkDataCl
     console.log(`Downloading attachment from ${url}`)
     return await client.request(url, {
         responseType: "buffer",
-        resolveBodyOnly: true
+        resolveBodyOnly: true,
+        headers: {
+            authorization: `Bearer ${ await client.getAccessToken() }`
+        }
     });
 }
 
@@ -43,7 +46,10 @@ async function downloadAttachmentFromRelativeUrl(url: string, client: BulkDataCl
     console.log(`Downloading attachment from ${url}`)
     return await client.request(url, {
         responseType: "buffer",
-        resolveBodyOnly: true
+        resolveBodyOnly: true,
+        headers: {
+            authorization: `Bearer ${ await client.getAccessToken() }`
+        }
     });
 }
 

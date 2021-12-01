@@ -110,12 +110,6 @@ export class BulkDataClient
         };
 
         this.request = got.extend({
-            context: {
-                authorize: async () => {
-                    this.accessToken = this._aborted ? "" : await this.getAccessToken();
-                    return this.accessToken
-                }
-            },
             headers: {
                 authorization: `Bearer ${ this.accessToken }`
             }
@@ -257,7 +251,11 @@ export class BulkDataClient
             );
         }
 
-        this.debug("Making export kick-off request")
+        if (!this.accessToken) {
+            this.accessToken = await this.getAccessToken();
+        }
+
+        this.debug("Making export kick-off request " + this.accessToken)
 
         const request = this.request(kickOffUrl, {
             json: body,
@@ -265,7 +263,8 @@ export class BulkDataClient
             followRedirect: false,
             headers: {
                 accept: "application/fhir+json",
-                prefer: "respond-async"
+                prefer: "respond-async",
+                authorization: `Bearer ${ this.accessToken }`
             }
         });
 
@@ -323,10 +322,14 @@ export class BulkDataClient
      *   export is still in progress this will resolve with 202 responses and
      *   should be called again until status 200 is received
      */
-    fetchExportManifest(location: string): Promise<Response<BulkData.ExportManifest>>
+    async fetchExportManifest(location: string): Promise<Response<BulkData.ExportManifest>>
     {
         if (this._aborted) {
             throw new CustomError(410, "The export has been canceled by the client");
+        }
+
+        if (!this.accessToken) {
+            this.accessToken = await this.getAccessToken();
         }
 
         const request = this.request<BulkData.ExportManifest>(location, {
