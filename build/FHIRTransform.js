@@ -52,14 +52,20 @@ async function downloadAttachmentFromAbsoluteUrl(url, client) {
     console.log(`Downloading attachment from ${url}`);
     return await client.request(url, {
         responseType: "buffer",
-        resolveBodyOnly: true
+        resolveBodyOnly: true,
+        headers: {
+            authorization: `Bearer ${await client.getAccessToken()}`
+        }
     });
 }
 async function downloadAttachmentFromRelativeUrl(url, client) {
     console.log(`Downloading attachment from ${url}`);
     return await client.request(url, {
         responseType: "buffer",
-        resolveBodyOnly: true
+        resolveBodyOnly: true,
+        headers: {
+            authorization: `Bearer ${await client.getAccessToken()}`
+        }
     });
 }
 async function inlineAttachmentData(node, data) {
